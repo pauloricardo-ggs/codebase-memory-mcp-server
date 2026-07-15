@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafeSegment, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, safeChild, saveCredentials, slugify } from '../src/lib.js';
+import { assertSafeSegment, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, parseLastJsonLine, safeChild, saveCredentials, slugify } from '../src/lib.js';
 
 test('slugify normaliza nomes de workspaces', () => {
   assert.equal(slugify('Pagamentos & Cobrança'), 'pagamentos-cobranca');
@@ -31,6 +31,12 @@ test('indexação usa flags em vez do JSON depreciado', () => {
   assert.deepEqual(indexRepositoryArguments('/data/repositories/time/api'), [
     'cli', 'index_repository', '--repo-path', '/data/repositories/time/api'
   ]);
+});
+
+test('extrai o projeto da última linha JSON da indexação', () => {
+  assert.deepEqual(parseLastJsonLine('level=info msg=start\n{"project":"workspace-api","status":"indexed"}\n'), {
+    project: 'workspace-api', status: 'indexed'
+  });
 });
 
 test('credencial do GitHub persiste com permissão restrita', async t => {

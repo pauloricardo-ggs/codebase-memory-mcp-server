@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Codebase Memory Admin</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/admin/styles.css">
 </head>
 <body>
   <div class="shell">
@@ -14,6 +14,7 @@
       <nav>
         <button class="nav-item active" data-view="workspaces"><span>⌘</span> Workspaces</button>
         <button class="nav-item" data-view="jobs"><span>↻</span> Operações <b id="job-count" hidden>0</b></button>
+        <button class="nav-item" data-action="open-graph-ui"><span>◇</span> Explorar grafo ↗</button>
       </nav>
       <div class="github-card" id="github-card"></div>
       <footer>Dados locais · acesso privado</footer>
@@ -30,6 +31,6 @@
 
   <dialog id="modal"><form method="dialog"><button class="close" value="cancel" aria-label="Fechar">×</button><div id="modal-content"></div></form></dialog>
   <div id="toasts" aria-live="polite"></div>
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/admin/app.js"></script>
 </body>
 </html>

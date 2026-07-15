@@ -45,15 +45,15 @@ Durante a instalação, escolha o orçamento de memória:
 
 As opções em GB são convertidas usando `1 GB = 1024 MB`, conforme o formato de `CBM_MEM_BUDGET_MB`.
 
-Em uma reinstalação, deixar a nova senha vazia preserva a credencial existente.
+Em uma reinstalação, deixar a nova senha vazia preserva a credencial existente. Não é necessário configurar domínio durante a instalação.
 
 Ao final, abra:
 
 ```text
-http://IP-OU-DNS-DO-SERVIDOR:8787
+http://<IP-ou-dominio>:8787/admin/
 ```
 
-O container `admin` não publica nenhuma porta no host. Apenas o container `proxy` publica `8787`; portanto, acessar `http://IP:8787` ou tentar acessar diretamente a API administrativa não funciona.
+O container `admin` não publica nenhuma porta no host. Apenas o container `proxy` publica `8787`; a porta interna `3000` não pode ser acessada diretamente.
 
 ## Primeiro uso
 
@@ -64,6 +64,7 @@ O container `admin` não publica nenhuma porta no host. Apenas o container `prox
 5. Pesquise, selecione os repositórios e confirme.
 6. Acompanhe os clones na tela **Operações**.
 7. Use **Indexar** quando o clone estiver pronto.
+8. Clique em **Explorar** no repositório ou em **Explorar grafo** no menu para abrir a UI oficial em uma nova aba.
 
 Para listar repositórios, o token precisa de leitura de metadados. Para repositórios privados, conceda também leitura de conteúdo. Prefira restringir o token a uma única organização e somente aos repositórios necessários.
 
@@ -127,6 +128,26 @@ auto_watch = true
 ```
 
 `CBM_ALLOWED_ROOT` restringe os caminhos aceitos, enquanto `auto_index=false` mantém a primeira indexação como uma ação administrativa explícita. O botão **Indexar** executa essa ação pelo backend do painel.
+
+## UI oficial do Codebase Memory
+
+O Compose mantém um processo `graph-ui` ativo, mas ele não publica a porta `9749`. O serviço compartilha o namespace de rede do Nginx e fica disponível na raiz do mesmo endereço:
+
+```text
+http://<IP-ou-dominio>:8787/
+```
+
+O painel administrativo fica isolado no prefixo:
+
+```text
+http://<IP-ou-dominio>:8787/admin/
+```
+
+Seus endpoints usam `/admin/api/`. A UI oficial permanece na raiz para que os caminhos absolutos `/assets/`, `/rpc` e `/api/` funcionem sem reescritas frágeis. O mesmo `.htpasswd` protege todo o endereço, portanto o navegador normalmente solicita as credenciais apenas uma vez.
+
+Depois de uma nova indexação, o painel salva o identificador `project` retornado pelo Codebase Memory. O botão **Explorar** abre diretamente o grafo desse projeto. Índices criados antes dessa versão abrem a lista geral de projetos até serem reindexados.
+
+O TLS continuará sendo responsabilidade da infraestrutura externa da AWS. Quando o ALB estiver configurado, a UI e o painel poderão usar o mesmo domínio HTTPS sem alterações no backend, respectivamente em `/` e `/admin/`.
 
 ## Comportamento das exclusões
 

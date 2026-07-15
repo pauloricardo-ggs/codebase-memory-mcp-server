@@ -46,3 +46,29 @@ services:
       timeout: 3s
       retries: 6
       start_period: 5s
+
+  graph-ui:
+    build:
+      context: ./app
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    init: true
+    restart: unless-stopped
+    network_mode: "service:proxy"
+    entrypoint: ["/bin/sh", "-c"]
+    # O servidor MCP encerra ao receber EOF. O tail mantém o stdin aberto
+    # enquanto a UI roda em modo detached.
+    command: ["tail -f /dev/null | /usr/local/bin/codebase-memory-mcp --ui=true --port=9749"]
+    environment:
+      CBM_ALLOWED_ROOT: /data/repositories
+      CBM_CACHE_DIR: /data/cache
+      CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
+    volumes:
+      - ./repositories:/data/repositories
+      - ./cache:/data/cache
+      - ${CBM_HOST_BIN}:/usr/local/bin/codebase-memory-mcp:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9749/"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s

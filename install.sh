@@ -223,7 +223,7 @@ ask_proxy_access() {
     warn "As senhas não coincidem."
   done
 
-  success "Autenticação do painel configurada para a porta 8787"
+  success "Credencial de acesso definida para ${ADMIN_USERNAME}"
 }
 
 create_local_structure() {
@@ -297,6 +297,10 @@ docker_compose() {
 start_admin_panel_command() {
   cd "$BASE_DIR"
   docker_compose up -d --build
+  # O nginx.conf é bind-mounted. Alterá-lo não faz o Compose recriar o
+  # container, portanto valide e recarregue o processo em toda instalação.
+  docker_compose exec -T proxy nginx -t
+  docker_compose exec -T proxy nginx -s reload
 }
 
 validate_admin_panel_command() {
@@ -308,6 +312,18 @@ validate_admin_panel_command() {
     sleep 1
   done
   docker_compose logs --tail=100 admin proxy
+  return 1
+}
+
+validate_graph_ui_command() {
+  local attempt
+  for attempt in {1..30}; do
+    if docker_compose exec -T graph-ui wget -q --spider "http://127.0.0.1:9749/"; then
+      return 0
+    fi
+    sleep 1
+  done
+  docker_compose logs --tail=100 graph-ui proxy
   return 1
 }
 
@@ -330,7 +346,8 @@ show_summary() {
   printf '  Executável   : %s\n' "$CBM_BIN"
   printf '  Usuário web  : %s\n' "$ADMIN_USERNAME"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
-  printf '\nPainel administrativo protegido:\n  http://<IP-OU-DNS-DO-SERVIDOR>:8787\n\n'
+  printf '\nUI oficial do Codebase Memory:\n  http://<IP-ou-dominio>:8787/\n'
+  printf '\nPainel administrativo protegido:\n  http://<IP-ou-dominio>:8787/admin/\n\n'
 }
 
 main() {
@@ -352,6 +369,7 @@ main() {
   run_step "Validando a instalação" validate_installation_command
   run_step "Construindo e iniciando o painel administrativo" start_admin_panel_command
   run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
+  run_step "Aguardando a UI do grafo ficar disponível" validate_graph_ui_command
   show_summary
 }
 

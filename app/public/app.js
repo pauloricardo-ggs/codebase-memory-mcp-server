@@ -11,7 +11,8 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '
 const date = value => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle:'short', timeStyle:'short' }).format(new Date(value)) : '—';
 
 async function api(url, options = {}) {
-  const response = await fetch(url, { ...options, headers: { 'content-type':'application/json', ...options.headers } });
+  const adminUrl = url.startsWith('/api/') ? `/admin${url}` : url;
+  const response = await fetch(adminUrl, { ...options, headers: { 'content-type':'application/json', ...options.headers } });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || 'Não foi possível concluir a operação.');
   return payload;
@@ -24,6 +25,15 @@ function toast(message, type = '') {
 function openModal(html) { $('#modal-content').innerHTML = html; modal.showModal(); }
 function closeModal() { modal.close(); }
 function setHeader(title, breadcrumb = 'Administração', actions = '') { $('#page-title').textContent = title; $('#breadcrumb').textContent = breadcrumb; $('#header-actions').innerHTML = actions; }
+
+function graphUrl(project = '') {
+  const url = new URL('/', location.origin);
+  if (project) {
+    url.searchParams.set('tab', 'graph');
+    url.searchParams.set('project', project);
+  }
+  return url.toString();
+}
 
 async function renderGithub() {
   const connection = await api('/api/github/connection');
@@ -65,6 +75,7 @@ function repositoryRow(repo) {
       </div>
 
       <div class="repo-actions">
+        ${repo.status === 'indexed' ? `<button class="button small graph-button" data-action="open-graph-ui" data-project="${escapeHtml(repo.project || '')}">Explorar ↗</button>` : ''}
         <button class="button small" data-action="sync" data-repo="${repo.id}">Sincronizar</button>
         <button class="button small" data-action="index" data-repo="${repo.id}">Indexar</button>
         <button class="button small danger" data-action="delete-repo" data-repo="${repo.id}" data-name="${escapeHtml(repo.fullName)}">Excluir</button>
@@ -157,6 +168,7 @@ document.addEventListener('click', async event => {
     if (target.dataset.view === 'jobs') return renderJobs();
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
+    if (action === 'open-graph-ui') { window.open(graphUrl(target.dataset.project || ''), '_blank', 'noopener,noreferrer'); return; }
     if (action === 'back') return renderWorkspaces();
     if (action === 'connect-github') return connectGithubModal();
     if (action === 'disconnect-github') { await api('/api/github/connection', { method:'DELETE' }); await renderGithub(); return toast('GitHub desconectado.'); }

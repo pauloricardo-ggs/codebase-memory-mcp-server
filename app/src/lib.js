@@ -39,6 +39,14 @@ export function indexRepositoryArguments(repositoryPath) {
   return ['cli', 'index_repository', '--repo-path', repositoryPath];
 }
 
+export function parseLastJsonLine(output) {
+  const lines = String(output ?? '').trim().split(/\r?\n/).reverse();
+  for (const line of lines) {
+    try { return JSON.parse(line); } catch { /* continue */ }
+  }
+  return null;
+}
+
 export async function loadState(file) {
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8'));
