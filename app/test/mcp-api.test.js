@@ -5,7 +5,7 @@ import protoLoader from '@grpc/proto-loader';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -157,8 +157,9 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   t.after(() => guardrail.close());
 
   assert.equal(gatewayConfig.mcp.policies.apiKey.mode, 'strict');
-  assert.equal(gatewayConfig.mcp.policies.apiKey.keys.length, 1);
-  assert.equal(gatewayConfig.mcp.policies.apiKey.keys[0].metadata.userId, 'system-playground');
+  assert.equal(gatewayConfig.mcp.policies.apiKey.keys.length, 2);
+  assert.ok(gatewayConfig.mcp.policies.apiKey.keys.some(item => item.metadata.userId === 'system-playground'));
+  assert.ok(gatewayConfig.mcp.policies.apiKey.keys.some(item => item.metadata.userId === 'workspace:plataforma'));
   assert.equal(gatewayConfig.mcp.policies.mcpGuardrails.processors[0].host, `admin:${guardrailPort}`);
   const schedule = await request(`http://127.0.0.1:${appPort}/api/workspaces/plataforma/schedule`);
   assert.equal(schedule.schedule.cron, '0 * * * *');
@@ -172,7 +173,34 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   assert.equal(updatedSchedule.schedule.cron, '*/15 * * * *');
   assert.equal(updatedSchedule.schedule.timezone, 'UTC');
   const system = await request(`http://127.0.0.1:${appPort}/api/mcp-system-token/reveal`, { method: 'POST' });
-  assert.equal(system.token, gatewayConfig.mcp.policies.apiKey.keys[0].key);
+  assert.equal(system.token, gatewayConfig.mcp.policies.apiKey.keys.find(item => item.metadata.userId === 'system-playground').key);
+  const workspaceToken = await request(`http://127.0.0.1:${appPort}/api/workspaces/plataforma/mcp-token/reveal`, { method: 'POST' });
+  assert.equal(workspaceToken.token, gatewayConfig.mcp.policies.apiKey.keys.find(item => item.metadata.userId === 'workspace:plataforma').key);
+  const persistedState = await readFile(path.join(appDataDirectory, 'state.json'), 'utf8');
+  assert.equal(persistedState.includes(workspaceToken.token), false);
+  assert.match(persistedState, /"algorithm": "aes-256-gcm"/);
+  const workspaceApi = await checkTool(guardrail, 'workspace:plataforma', 'search_graph', { project: 'plataforma-api' });
+  const workspaceWorker = await checkTool(guardrail, 'workspace:plataforma', 'search_graph', { project: 'plataforma-worker' });
+  assert.ok(workspaceApi.pass);
+  assert.ok(workspaceWorker.pass);
+  const workspaceData = await request(`http://127.0.0.1:${appPort}/api/workspaces/plataforma`);
+  assert.equal('mcpCredential' in workspaceData.workspace, false);
+  assert.equal(workspaceData.workspace.mcpAccess.status, 'active');
+  const createdWorkspace = await request(`http://127.0.0.1:${appPort}/api/workspaces`, {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Financeiro', description: 'Serviços financeiros' })
+  });
+  assert.match(createdWorkspace.token, /^cbm_mcp_/);
+  assert.equal(createdWorkspace.workspace.mcpAccess.status, 'active');
+  assert.equal(gatewayConfig.mcp.policies.apiKey.keys.find(item => item.metadata.userId === 'workspace:financeiro').key, createdWorkspace.token);
+  const rotatedWorkspace = await request(`http://127.0.0.1:${appPort}/api/workspaces/financeiro/mcp-token/rotate`, { method: 'POST' });
+  assert.notEqual(rotatedWorkspace.token, createdWorkspace.token);
+  await request(`http://127.0.0.1:${appPort}/api/workspaces/financeiro/mcp-token/revoke`, { method: 'POST' });
+  assert.equal(gatewayConfig.mcp.policies.apiKey.keys.some(item => item.metadata.userId === 'workspace:financeiro'), false);
+  const reactivatedWorkspace = await request(`http://127.0.0.1:${appPort}/api/workspaces/financeiro/mcp-token/reactivate`, { method: 'POST' });
+  assert.notEqual(reactivatedWorkspace.token, rotatedWorkspace.token);
+  await request(`http://127.0.0.1:${appPort}/api/workspaces/financeiro`, { method: 'DELETE' });
+  assert.equal(gatewayConfig.mcp.policies.apiKey.keys.some(item => item.metadata.userId === 'workspace:financeiro'), false);
 
   const created = await request(`http://127.0.0.1:${appPort}/api/mcp-users`, {
     method: 'POST',
@@ -213,7 +241,7 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   assert.ok(allowedAfterUpdate.pass);
 
   await request(`http://127.0.0.1:${appPort}/api/mcp-users/${created.user.id}/revoke`, { method: 'POST' });
-  assert.deepEqual(gatewayConfig.mcp.policies.apiKey.keys.map(item => item.metadata.userId), ['system-playground']);
+  assert.deepEqual(new Set(gatewayConfig.mcp.policies.apiKey.keys.map(item => item.metadata.userId)), new Set(['system-playground', 'workspace:plataforma']));
   assert.equal(gatewayConfig.mcp.policies.apiKey.mode, 'strict');
 
   const reactivated = await request(`http://127.0.0.1:${appPort}/api/mcp-users/${created.user.id}/reactivate`, { method: 'POST' });
@@ -221,10 +249,10 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   assert.equal(gatewayConfig.mcp.policies.apiKey.keys.find(item => item.metadata.userId === created.user.id).key, reactivated.token);
 
   await request(`http://127.0.0.1:${appPort}/api/mcp-users/${created.user.id}`, { method: 'DELETE' });
-  assert.deepEqual(gatewayConfig.mcp.policies.apiKey.keys.map(item => item.metadata.userId), ['system-playground']);
+  assert.deepEqual(new Set(gatewayConfig.mcp.policies.apiKey.keys.map(item => item.metadata.userId)), new Set(['system-playground', 'workspace:plataforma']));
   assert.equal(gatewayConfig.mcp.policies.apiKey.mode, 'strict');
   const rotatedSystem = await request(`http://127.0.0.1:${appPort}/api/mcp-system-token/rotate`, { method: 'POST' });
   assert.notEqual(rotatedSystem.token, system.token);
-  assert.equal(gatewayConfig.mcp.policies.apiKey.keys[0].key, rotatedSystem.token);
+  assert.equal(gatewayConfig.mcp.policies.apiKey.keys.find(item => item.metadata.userId === 'system-playground').key, rotatedSystem.token);
   assert.equal(stderr, '');
 });

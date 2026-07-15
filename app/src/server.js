@@ -4,7 +4,7 @@ import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeSegment, DEFAULT_TIMEZONE, DEFAULT_WORKSPACE_CRON, cronMatches, describeCron, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, nextCronOccurrence, parseCronExpression, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify, validateTimezone } from './lib.js';
+import { assertSafeSegment, DEFAULT_TIMEZONE, DEFAULT_WORKSPACE_CRON, cronMatches, decryptWorkspaceToken, describeCron, encryptWorkspaceToken, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, nextCronOccurrence, parseCronExpression, parseLastJsonLine, publicMcpUser, publicWorkspace, reconcileRepositoryProjects, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify, validateTimezone } from './lib.js';
 import { startMcpGuardrailServer } from './mcp-guardrail.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -15,6 +15,7 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const GITHUB_CREDENTIALS_FILE = path.join(DATA_DIR, 'secrets', 'github-credentials.json');
 const MCP_USERS_FILE = path.join(DATA_DIR, 'secrets', 'mcp-users.json');
 const MCP_SYSTEM_TOKEN_FILE = path.join(DATA_DIR, 'secrets', 'mcp-system-token');
+const MCP_WORKSPACE_KEY_FILE = path.join(DATA_DIR, 'secrets', 'mcp-workspace-encryption-key');
 const CBM_BIN = process.env.CBM_BIN || 'codebase-memory-mcp';
 const PORT = Number(process.env.PORT || 3000);
 const UI_PORT = Number(process.env.UI_PORT);
@@ -53,6 +54,11 @@ mcpUserStore.users = mcpUserStore.users.map(item => {
 if (stateMigrated || schedulesMigrated) await saveState(STATE_FILE, state);
 if (mcpUsersMigrated) await saveMcpUserStore(MCP_USERS_FILE, mcpUserStore);
 let mcpSystemToken = await loadSecret(MCP_SYSTEM_TOKEN_FILE);
+let mcpWorkspaceEncryptionKey = await loadSecret(MCP_WORKSPACE_KEY_FILE);
+if (!mcpWorkspaceEncryptionKey) {
+  mcpWorkspaceEncryptionKey = generateMcpToken();
+  await saveSecret(MCP_WORKSPACE_KEY_FILE, mcpWorkspaceEncryptionKey);
+}
 const storedGithubCredentials = await loadCredentials(GITHUB_CREDENTIALS_FILE);
 let githubToken = storedGithubCredentials?.token ?? '';
 let githubUser = storedGithubCredentials?.user ?? null;
@@ -162,6 +168,15 @@ function mcpRepositoryIds(input, { required = true } = {}) {
 function mcpAccess(userId) {
   const knownProjects = new Set(state.repositories.filter(item => item.project).map(item => item.project));
   if (userId === MCP_SYSTEM_USER.id) return { system: true, allowedProjects: new Set(), knownProjects };
+  if (userId.startsWith('workspace:')) {
+    const workspaceId = userId.slice('workspace:'.length);
+    const selectedWorkspace = state.workspaces.find(item => item.id === workspaceId && item.mcpCredential?.status === 'active');
+    if (!selectedWorkspace) return null;
+    const allowedProjects = new Set(state.repositories
+      .filter(item => item.workspaceId === workspaceId && item.project)
+      .map(item => item.project));
+    return { system: false, allowedProjects, knownProjects };
+  }
   const user = mcpUserStore.users.find(item => item.id === userId && item.status === 'active');
   if (!user) return null;
   const allowedRepositoryIds = new Set(user.repositoryIds || []);
@@ -284,6 +299,89 @@ function issueMcpToken(user) {
       revokedAt: null
     }
   };
+}
+
+function workspacePrincipal(selectedWorkspace) {
+  return {
+    id: `workspace:${selectedWorkspace.id}`,
+    workspaceId: selectedWorkspace.id,
+    name: selectedWorkspace.name,
+    identity: `workspace:${selectedWorkspace.id}`
+  };
+}
+
+function issueWorkspaceMcpCredential(selectedWorkspace) {
+  const token = generateMcpToken();
+  const now = new Date().toISOString();
+  return {
+    token,
+    credential: {
+      status: 'active',
+      keyPrefix: `${token.slice(0, 16)}…`,
+      tokenHash: mcpTokenFingerprint(token),
+      encryptedToken: encryptWorkspaceToken(token, mcpWorkspaceEncryptionKey),
+      tokenCreatedAt: now,
+      updatedAt: now,
+      revokedAt: null
+    }
+  };
+}
+
+async function commitWorkspaceChange(nextState, changeGatewayConfig) {
+  if (mcpUserMutation) throw new Error('Outra alteração de credenciais MCP está em andamento. Tente novamente.');
+  mcpUserMutation = true;
+  let previousConfig;
+  try {
+    previousConfig = await agentGatewayConfig();
+    const nextConfig = structuredClone(previousConfig);
+    changeGatewayConfig(nextConfig);
+    await agentGatewayConfig(nextConfig);
+    try {
+      await saveState(STATE_FILE, nextState);
+    } catch (error) {
+      await agentGatewayConfig(previousConfig).catch(rollbackError => console.error('Falha ao restaurar configuração do AgentGateway:', rollbackError));
+      throw error;
+    }
+    state = nextState;
+  } finally {
+    mcpUserMutation = false;
+  }
+}
+
+async function provisionWorkspaceMcpTokens() {
+  const nextState = structuredClone(state);
+  const issuedTokens = new Map();
+  for (const selectedWorkspace of nextState.workspaces) {
+    if (!selectedWorkspace.mcpCredential) {
+      const issued = issueWorkspaceMcpCredential(selectedWorkspace);
+      selectedWorkspace.mcpCredential = issued.credential;
+      issuedTokens.set(selectedWorkspace.id, issued.token);
+    }
+  }
+  if (mcpUserMutation) throw new Error('Outra alteração de credenciais MCP está em andamento. Tente novamente.');
+  mcpUserMutation = true;
+  let previousConfig;
+  try {
+    previousConfig = await agentGatewayConfig();
+    const nextConfig = structuredClone(previousConfig);
+    for (const selectedWorkspace of nextState.workspaces) {
+      if (selectedWorkspace.mcpCredential.status !== 'active') continue;
+      const token = issuedTokens.get(selectedWorkspace.id)
+        || decryptWorkspaceToken(selectedWorkspace.mcpCredential.encryptedToken, mcpWorkspaceEncryptionKey);
+      setMcpGatewayUserKey(nextConfig, workspacePrincipal(selectedWorkspace), token);
+    }
+    if (JSON.stringify(nextConfig) !== JSON.stringify(previousConfig)) await agentGatewayConfig(nextConfig);
+    if (issuedTokens.size) {
+      try { await saveState(STATE_FILE, nextState); }
+      catch (error) {
+        await agentGatewayConfig(previousConfig).catch(rollbackError => console.error('Falha ao restaurar configuração do AgentGateway:', rollbackError));
+        throw error;
+      }
+      state = nextState;
+    }
+  } finally {
+    mcpUserMutation = false;
+  }
 }
 
 function publicRepository(item) {
@@ -618,7 +716,7 @@ async function routeApi(request, response, url) {
     return json(response, 200, { repositories });
   }
   if (url.pathname === '/api/workspaces' && request.method === 'GET') {
-    return json(response, 200, { workspaces: state.workspaces.map(item => ({ ...item, updateSchedule: publicUpdateSchedule(item), repositoryCount: state.repositories.filter(repo => repo.workspaceId === item.id).length })) });
+    return json(response, 200, { workspaces: state.workspaces.map(item => ({ ...publicWorkspace(item), updateSchedule: publicUpdateSchedule(item), repositoryCount: state.repositories.filter(repo => repo.workspaceId === item.id).length })) });
   }
   if (url.pathname === '/api/workspaces' && request.method === 'POST') {
     const input = await body(request);
@@ -627,27 +725,65 @@ async function routeApi(request, response, url) {
     if (!name || !id) throw new Error('Informe um nome válido para o workspace.');
     if (state.workspaces.some(item => item.id === id)) throw new Error('Já existe um workspace com esse nome.');
     const item = { id, name: name.slice(0, 80), description: String(input.description ?? '').trim().slice(0, 240), updateSchedule: defaultUpdateSchedule(), createdAt: new Date().toISOString() };
+    const issued = issueWorkspaceMcpCredential(item);
+    item.mcpCredential = issued.credential;
     await mkdir(safeChild(REPOSITORIES_DIR, id), { recursive: true });
-    state.workspaces.push(item);
-    await persist();
-    return json(response, 201, item);
+    const nextState = { ...state, workspaces: [...state.workspaces, item] };
+    try {
+      await commitWorkspaceChange(nextState, config => setMcpGatewayUserKey(config, workspacePrincipal(item), issued.token));
+    } catch (error) {
+      await rmdir(safeChild(REPOSITORIES_DIR, id)).catch(() => {});
+      throw error;
+    }
+    return json(response, 201, { workspace: publicWorkspace(item), token: issued.token });
   }
 
   if (parts[0] === 'workspaces' && parts[1]) {
     const workspaceId = parts[1];
     const selectedWorkspace = workspace(workspaceId);
     if (parts.length === 2 && request.method === 'GET') {
-      return json(response, 200, { workspace: { ...selectedWorkspace, updateSchedule: publicUpdateSchedule(selectedWorkspace) }, repositories: state.repositories.filter(item => item.workspaceId === workspaceId).map(publicRepository) });
+      return json(response, 200, { workspace: { ...publicWorkspace(selectedWorkspace), updateSchedule: publicUpdateSchedule(selectedWorkspace) }, repositories: state.repositories.filter(item => item.workspaceId === workspaceId).map(publicRepository) });
     }
     if (parts.length === 2 && request.method === 'DELETE') {
       if (state.repositories.some(item => item.workspaceId === workspaceId)) throw new Error('Remova os repositórios antes de excluir o workspace.');
       const directory = safeChild(REPOSITORIES_DIR, workspaceId);
       const remainingFiles = await readdir(directory).catch(error => error.code === 'ENOENT' ? [] : Promise.reject(error));
       if (remainingFiles.length) throw new Error('A pasta do workspace contém arquivos não gerenciados e não pode ser excluída.');
-      state.workspaces = state.workspaces.filter(item => item.id !== workspaceId);
+      const nextState = { ...state, workspaces: state.workspaces.filter(item => item.id !== workspaceId) };
       await rmdir(directory).catch(error => { if (error.code !== 'ENOENT') throw error; });
-      await persist();
+      try {
+        await commitWorkspaceChange(nextState, config => removeMcpGatewayUserKey(config, workspacePrincipal(selectedWorkspace).id));
+      } catch (error) {
+        await mkdir(directory, { recursive: true }).catch(() => {});
+        throw error;
+      }
       return json(response, 200, { deleted: true });
+    }
+    if (parts[2] === 'mcp-token' && parts.length === 4) {
+      if (parts[3] === 'reveal' && request.method === 'POST') {
+        if (!selectedWorkspace.mcpCredential) throw new Error('O workspace ainda não possui credencial MCP.');
+        const token = decryptWorkspaceToken(selectedWorkspace.mcpCredential.encryptedToken, mcpWorkspaceEncryptionKey);
+        return json(response, 200, { name: selectedWorkspace.name, token });
+      }
+      if ((parts[3] === 'rotate' || parts[3] === 'reactivate') && request.method === 'POST') {
+        if (parts[3] === 'rotate' && selectedWorkspace.mcpCredential?.status !== 'active') throw new Error('Reative o token antes de rotacioná-lo.');
+        if (parts[3] === 'reactivate' && selectedWorkspace.mcpCredential?.status === 'active') throw new Error('O token deste workspace já está ativo.');
+        const nextState = structuredClone(state);
+        const nextWorkspace = nextState.workspaces.find(item => item.id === workspaceId);
+        const issued = issueWorkspaceMcpCredential(nextWorkspace);
+        nextWorkspace.mcpCredential = issued.credential;
+        await commitWorkspaceChange(nextState, config => setMcpGatewayUserKey(config, workspacePrincipal(nextWorkspace), issued.token));
+        return json(response, 200, { workspace: publicWorkspace(nextWorkspace), token: issued.token });
+      }
+      if (parts[3] === 'revoke' && request.method === 'POST') {
+        if (selectedWorkspace.mcpCredential?.status !== 'active') throw new Error('O token deste workspace já está revogado.');
+        const nextState = structuredClone(state);
+        const nextWorkspace = nextState.workspaces.find(item => item.id === workspaceId);
+        const now = new Date().toISOString();
+        nextWorkspace.mcpCredential = { ...nextWorkspace.mcpCredential, status: 'revoked', revokedAt: now, updatedAt: now };
+        await commitWorkspaceChange(nextState, config => removeMcpGatewayUserKey(config, workspacePrincipal(nextWorkspace).id));
+        return json(response, 200, { workspace: publicWorkspace(nextWorkspace) });
+      }
     }
     if (parts[2] === 'schedule' && parts.length === 3) {
       if (request.method === 'GET') return json(response, 200, { schedule: publicUpdateSchedule(selectedWorkspace), concurrency: REPOSITORY_SYNC_CONCURRENCY });
@@ -775,6 +911,7 @@ await checkWorkspaceSchedules().catch(error => console.warn('Falha ao verificar 
 setInterval(() => checkWorkspaceSchedules().catch(error => console.warn('Falha ao verificar rotinas:', error.message)), 15_000).unref();
 await startMcpGuardrailServer(mcpAccess, MCP_GUARDRAIL_ADDR);
 await provisionMcpSystemToken();
+await provisionWorkspaceMcpTokens();
 
 http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);

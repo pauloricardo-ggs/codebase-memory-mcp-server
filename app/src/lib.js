@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -246,6 +246,52 @@ export function mcpTokenFingerprint(token) {
   return createHash('sha256').update(token).digest('hex');
 }
 
+function workspaceTokenKey(secret) {
+  const value = String(secret || '').trim();
+  if (!value) throw new Error('A chave de criptografia dos tokens MCP não foi configurada.');
+  return createHash('sha256').update(value).digest();
+}
+
+export function encryptWorkspaceToken(token, secret) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', workspaceTokenKey(secret), iv);
+  const ciphertext = Buffer.concat([cipher.update(String(token), 'utf8'), cipher.final()]);
+  return {
+    algorithm: 'aes-256-gcm',
+    iv: iv.toString('base64url'),
+    ciphertext: ciphertext.toString('base64url'),
+    authTag: cipher.getAuthTag().toString('base64url')
+  };
+}
+
+export function decryptWorkspaceToken(encrypted, secret) {
+  if (encrypted?.algorithm !== 'aes-256-gcm') throw new Error('Formato do token criptografado não suportado.');
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', workspaceTokenKey(secret), Buffer.from(encrypted.iv, 'base64url'));
+    decipher.setAuthTag(Buffer.from(encrypted.authTag, 'base64url'));
+    return Buffer.concat([
+      decipher.update(Buffer.from(encrypted.ciphertext, 'base64url')),
+      decipher.final()
+    ]).toString('utf8');
+  } catch {
+    throw new Error('Não foi possível descriptografar o token MCP do workspace. Verifique a chave de criptografia.');
+  }
+}
+
+export function publicWorkspace(item) {
+  const { mcpCredential, ...visible } = item;
+  if (mcpCredential) {
+    visible.mcpAccess = {
+      status: mcpCredential.status,
+      keyPrefix: mcpCredential.keyPrefix,
+      tokenCreatedAt: mcpCredential.tokenCreatedAt,
+      updatedAt: mcpCredential.updatedAt,
+      revokedAt: mcpCredential.revokedAt
+    };
+  }
+  return visible;
+}
+
 export function publicMcpUser(user) {
   const visible = {};
   for (const key of ['id', 'name', 'identity', 'description', 'repositoryIds', 'status', 'keyPrefix', 'createdAt', 'updatedAt', 'tokenCreatedAt', 'revokedAt']) {
@@ -338,7 +384,8 @@ export function setMcpGatewayUserKey(config, user, token) {
       userId: user.id,
       user: user.name,
       identity: user.identity,
-      access: user.id === 'system-playground' ? 'system' : 'repository-scoped'
+      access: user.id === 'system-playground' ? 'system' : user.workspaceId ? 'workspace-scoped' : 'repository-scoped',
+      ...(user.workspaceId ? { workspaceId: user.workspaceId } : {})
     }
   });
   return config;

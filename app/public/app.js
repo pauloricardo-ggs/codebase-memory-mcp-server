@@ -110,8 +110,11 @@ async function renderWorkspace(id) {
   const { workspace, repositories } = await api(`/api/workspaces/${id}`);
   setHeader(workspace.name, 'Workspaces / Detalhes', '<button class="button" data-action="delete-workspace">Excluir workspace</button> <button class="button primary" data-action="add-repositories">＋ Adicionar repositórios</button>');
   const schedule = workspace.updateSchedule;
+  const mcpAccess = workspace.mcpAccess || {};
+  const mcpActive = mcpAccess.status === 'active';
+  const mcpCard = `<section class="card schedule-card"><div><div class="schedule-title"><h2>Token MCP do workspace</h2><span class="status ${mcpActive ? 'active' : 'revoked'}">${mcpActive ? 'Ativo' : 'Revogado'}</span></div><p>Esta credencial acompanha automaticamente todos os repositórios adicionados ou removidos deste workspace.</p><div class="schedule-details"><span><small>Token</small><code>${escapeHtml(mcpAccess.keyPrefix || 'não provisionado')}</code></span><span><small>Gerado em</small><strong>${date(mcpAccess.tokenCreatedAt)}</strong></span></div></div><div class="schedule-actions"><div class="repo-actions">${mcpActive ? `<button class="button small" data-action="reveal-workspace-token">Exibir token</button><button class="button small" data-action="rotate-workspace-token">Gerar novo token</button><button class="button small danger" data-action="revoke-workspace-token">Revogar</button>` : `<button class="button small primary" data-action="reactivate-workspace-token">Reativar</button>`}</div></div></section>`;
   const scheduleCard = `<section class="card schedule-card"><div><div class="schedule-title"><h2>Atualização automática</h2><span class="status ${schedule.enabled ? 'active' : 'revoked'}">${schedule.enabled ? 'Ativada' : 'Desativada'}</span></div><p class="schedule-description">${escapeHtml(schedule.description)}</p><p>Executa somente <code>git pull</code>. A atualização do índice permanece sob responsabilidade do watcher.</p><div class="schedule-details"><span><small>Expressão cron</small><code>${escapeHtml(schedule.cron)}</code></span><span><small>Fuso</small><strong>${escapeHtml(schedule.timezone)}</strong></span><span><small>Próxima execução</small><strong>${date(schedule.nextRunAt)}</strong></span><span><small>Última execução</small><strong>${date(schedule.lastRunAt)}${schedule.lastRunStatus ? ` · ${escapeHtml(schedule.lastRunStatus)}` : ''}</strong></span></div></div><div class="schedule-actions"><label class="switch-control" data-action="toggle-schedule" data-enabled="${schedule.enabled}" title="${schedule.enabled ? 'Desativar rotina' : 'Ativar rotina'}"><input type="checkbox" ${schedule.enabled ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span><span>${schedule.enabled ? 'Ativada' : 'Desativada'}</span></label><div class="repo-actions"><button class="button small" data-action="run-workspace-sync">Executar agora</button><button class="button small" data-action="edit-schedule">Editar cron</button></div></div></section>`;
-  content.innerHTML = `<div class="toolbar"><button class="button small" data-action="back">← Voltar</button><span class="subtle">${repositories.length} repositório${repositories.length === 1 ? '' : 's'}</span></div>${scheduleCard}${repositories.length ? `<div class="repo-list">${repositories.map(repositoryRow).join('')}</div>` : `<div class="empty" style="margin-top:18px"><div><div class="empty-icon">◇</div><h2>Nenhum repositório neste workspace</h2><p>Selecione repositórios disponíveis na sua conta do GitHub e eles serão clonados automaticamente.</p><button class="button primary" data-action="add-repositories">Adicionar repositórios</button></div></div>`}`;
+  content.innerHTML = `<div class="toolbar"><button class="button small" data-action="back">← Voltar</button><span class="subtle">${repositories.length} repositório${repositories.length === 1 ? '' : 's'}</span></div>${mcpCard}${scheduleCard}${repositories.length ? `<div class="repo-list">${repositories.map(repositoryRow).join('')}</div>` : `<div class="empty" style="margin-top:18px"><div><div class="empty-icon">◇</div><h2>Nenhum repositório neste workspace</h2><p>Selecione repositórios disponíveis na sua conta do GitHub e eles serão clonados automaticamente.</p><button class="button primary" data-action="add-repositories">Adicionar repositórios</button></div></div>`}`;
 }
 
 function editScheduleModal(schedule) {
@@ -206,8 +209,8 @@ function editMcpAccessModal(user) {
   updateMcpAccessSelection();
 }
 
-function mcpTokenModal(name, token) {
-  openModal(`<h2 class="modal-title">Token de ${escapeHtml(name)}</h2><p class="modal-copy token-warning">Copie este token agora. Por segurança, ele não será exibido novamente pelo painel.</p><div class="token-box"><code id="generated-mcp-token">${escapeHtml(token)}</code><button class="button small" type="button" data-action="copy-mcp-token">Copiar token</button></div><div class="client-example"><small>Cabeçalho de autenticação</small><code>Authorization: Bearer ${escapeHtml(token)}</code></div><div class="modal-actions"><button class="button primary" value="cancel">Concluir</button></div>`);
+function mcpTokenModal(name, token, revisable = false) {
+  openModal(`<h2 class="modal-title">Token de ${escapeHtml(name)}</h2><p class="modal-copy token-warning">${revisable ? 'Este token pode ser consultado novamente no detalhe do workspace. Trate-o como um segredo.' : 'Copie este token agora. Por segurança, ele não será exibido novamente pelo painel.'}</p><div class="token-box"><code id="generated-mcp-token">${escapeHtml(token)}</code><button class="button small" type="button" data-action="copy-mcp-token">Copiar token</button></div><div class="client-example"><small>Cabeçalho de autenticação</small><code>Authorization: Bearer ${escapeHtml(token)}</code></div><div class="modal-actions"><button class="button primary" value="cancel">Concluir</button></div>`);
 }
 
 async function copyText(value) {
@@ -373,6 +376,24 @@ document.addEventListener('click', async event => {
       if (!confirm('Gerar um novo token técnico? Testes ou Playgrounds que estejam usando o token atual deixarão de funcionar imediatamente.')) return;
       const result = await api('/api/mcp-system-token/rotate', { method:'POST' }); mcpTokenModal(result.name, result.token); return;
     }
+    if (action === 'reveal-workspace-token') {
+      const result = await api(`/api/workspaces/${currentWorkspace}/mcp-token/reveal`, { method:'POST' });
+      mcpTokenModal(result.name, result.token, true); return;
+    }
+    if (action === 'rotate-workspace-token') {
+      if (!confirm('Gerar um novo token para este workspace? O token atual deixará de funcionar imediatamente.')) return;
+      const result = await api(`/api/workspaces/${currentWorkspace}/mcp-token/rotate`, { method:'POST' });
+      await renderWorkspace(currentWorkspace); mcpTokenModal(result.workspace.name, result.token, true); return;
+    }
+    if (action === 'revoke-workspace-token') {
+      if (!confirm('Revogar o token MCP deste workspace?')) return;
+      await api(`/api/workspaces/${currentWorkspace}/mcp-token/revoke`, { method:'POST' });
+      toast('Token do workspace revogado.'); return renderWorkspace(currentWorkspace);
+    }
+    if (action === 'reactivate-workspace-token') {
+      const result = await api(`/api/workspaces/${currentWorkspace}/mcp-token/reactivate`, { method:'POST' });
+      await renderWorkspace(currentWorkspace); mcpTokenModal(result.workspace.name, result.token, true); return;
+    }
     if (action === 'rotate-mcp-token') {
       if (!confirm(`Gerar um novo token para ${target.dataset.name}? O token atual deixará de funcionar imediatamente.`)) return;
       const result = await api(`/api/mcp-users/${target.dataset.user}/rotate`, { method:'POST' });
@@ -397,7 +418,7 @@ document.addEventListener('click', async event => {
     if (action === 'connect-github') return connectGithubModal();
     if (action === 'disconnect-github') { await api('/api/github/connection', { method:'DELETE' }); await renderGithub(); return toast('GitHub desconectado.'); }
     if (action === 'save-github') { target.disabled = true; await api('/api/github/connection', { method:'POST', body:JSON.stringify({ token:$('#github-token').value }) }); closeModal(); await renderGithub(); return toast('GitHub conectado.'); }
-    if (action === 'save-workspace') { target.disabled = true; await api('/api/workspaces', { method:'POST', body:JSON.stringify({ name:$('#workspace-name').value, description:$('#workspace-description').value }) }); closeModal(); toast('Workspace criado.'); return renderWorkspaces(); }
+    if (action === 'save-workspace') { target.disabled = true; const result = await api('/api/workspaces', { method:'POST', body:JSON.stringify({ name:$('#workspace-name').value, description:$('#workspace-description').value }) }); closeModal(); await renderWorkspaces(); mcpTokenModal(result.workspace.name, result.token, true); return; }
     if (action === 'add-repositories') return repositoryPicker();
     if (action === 'clone-selected') { const selected = [...selectedRepositories]; if (!selected.length) throw new Error('Selecione pelo menos um repositório.'); target.disabled = true; await api(`/api/workspaces/${currentWorkspace}/repositories`, { method:'POST', body:JSON.stringify({ repositories:selected }) }); selectedRepositories.clear(); closeModal(); toast('Clonagem iniciada.'); await refreshJobs(); return renderWorkspace(currentWorkspace); }
     if (action === 'sync' || action === 'index') { await api(`/api/workspaces/${currentWorkspace}/repositories/${target.dataset.repo}/${action}`, { method:'POST' }); toast(action === 'sync' ? 'Sincronização iniciada.' : 'Indexação iniciada.'); return refreshJobs(); }

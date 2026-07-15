@@ -15,6 +15,11 @@ INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main
 CURRENT_USER="$(id -un)"
 SUDO_KEEPALIVE_PID=''
 ADMIN_PASSWORD=''
+ADMIN_EMAIL=''
+OPENWEBUI_PREVIOUS_EMAIL=''
+OPENWEBUI_PREVIOUS_PASSWORD=''
+OPENWEBUI_DESIRED_PASSWORD=''
+OLLAMA_CHAT_MODEL='qwen3:14b'
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
@@ -38,6 +43,9 @@ on_error() {
 trap 'on_error "$LINENO"' ERR
 
 cleanup() {
+  ADMIN_PASSWORD=''
+  OPENWEBUI_PREVIOUS_PASSWORD=''
+  OPENWEBUI_DESIRED_PASSWORD=''
   if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -201,6 +209,36 @@ ask_memory_budget() {
   success "Budget definido em ${CBM_MEM_BUDGET_MB} MB"
 }
 
+ask_ollama_model() {
+  local choice custom_model existing_model
+  existing_model="$(read_existing_environment_value OLLAMA_CHAT_MODEL)"
+  OLLAMA_CHAT_MODEL="${existing_model:-qwen3:14b}"
+
+  printf "\n${COLOR_BOLD}Modelo local do Ollama${COLOR_RESET}\n"
+  printf 'Qual modelo de chat deve ser baixado durante a instalação?\n\n'
+  printf '  1) qwen3:14b\n'
+  printf '  2) qwen3:30b\n'
+  printf '  3) Outro modelo do Ollama\n\n'
+
+  while true; do
+    read -r -p "Escolha [1-3, atual: ${OLLAMA_CHAT_MODEL}]: " choice
+    case "${choice:-1}" in
+      1) OLLAMA_CHAT_MODEL='qwen3:14b'; break ;;
+      2) OLLAMA_CHAT_MODEL='qwen3:30b'; break ;;
+      3)
+        read -r -p 'Informe o identificador do modelo (ex.: gemma3:12b): ' custom_model
+        if [[ "$custom_model" =~ ^[A-Za-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]]; then
+          OLLAMA_CHAT_MODEL="$custom_model"
+          break
+        fi
+        warn 'Identificador inválido para um modelo Ollama.'
+        ;;
+      *) warn 'Opção inválida. Escolha um número entre 1 e 3.' ;;
+    esac
+  done
+  success "Modelo selecionado: ${OLLAMA_CHAT_MODEL}"
+}
+
 read_existing_environment_value() {
   local variable_name="$1"
   if [[ -f "$ENV_FILE" ]]; then
@@ -209,36 +247,42 @@ read_existing_environment_value() {
 }
 
 ask_proxy_access() {
-  local suggested_username input password_confirmation existing_username=''
+  local suggested_email input password_confirmation existing_username=''
 
   if [[ -f "${PROXY_SECRETS_DIR}/.htpasswd" ]]; then
     existing_username="$(cut -d: -f1 "${PROXY_SECRETS_DIR}/.htpasswd" | head -n 1)"
   fi
-  suggested_username="${existing_username:-$(read_existing_environment_value ADMIN_USERNAME)}"
-  suggested_username="${suggested_username:-admin}"
+  if [[ -f "${DATA_DIR}/secrets/openwebui.env" ]]; then
+    OPENWEBUI_PREVIOUS_EMAIL="$(sed -n 's/^WEBUI_ADMIN_EMAIL=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
+    OPENWEBUI_PREVIOUS_PASSWORD="$(sed -n 's/^WEBUI_ADMIN_PASSWORD=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
+  fi
+  suggested_email="${OPENWEBUI_PREVIOUS_EMAIL:-$(read_existing_environment_value ADMIN_EMAIL)}"
+  suggested_email="${suggested_email:-$existing_username}"
+  [[ "$suggested_email" == *@*.* ]] || suggested_email='admin@local.invalid'
 
   printf "\n${COLOR_BOLD}Acesso ao painel${COLOR_RESET}\n"
   while true; do
-    read -r -p "Usuário administrativo [${suggested_username}]: " input
-    ADMIN_USERNAME="${input:-$suggested_username}"
-    if [[ "$ADMIN_USERNAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+    read -r -p "E-mail administrativo [${suggested_email}]: " input
+    ADMIN_EMAIL="${input:-$suggested_email}"
+    if [[ "$ADMIN_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
       break
     fi
-    warn "Use apenas letras, números, ponto, hífen ou underscore."
+    warn "Informe um endereço de e-mail válido."
   done
+  ADMIN_USERNAME="$ADMIN_EMAIL"
 
   while true; do
-    if [[ -f "${PROXY_SECRETS_DIR}/.htpasswd" && "$ADMIN_USERNAME" == "$existing_username" ]]; then
+    if [[ -f "${PROXY_SECRETS_DIR}/.htpasswd" && -s "${DATA_DIR}/secrets/openwebui.env" && "$ADMIN_EMAIL" == "$OPENWEBUI_PREVIOUS_EMAIL" && "$ADMIN_USERNAME" == "$existing_username" ]]; then
       read -r -s -p 'Nova senha (deixe vazia para manter a atual): ' ADMIN_PASSWORD
       printf '\n'
       [[ -z "$ADMIN_PASSWORD" ]] && break
     else
-      read -r -s -p 'Senha administrativa (mínimo de 12 caracteres): ' ADMIN_PASSWORD
+      read -r -s -p 'Senha administrativa para o painel e Open WebUI (mínimo de 6 caracteres): ' ADMIN_PASSWORD
       printf '\n'
     fi
 
-    if (( ${#ADMIN_PASSWORD} < 12 )); then
-      warn "A senha precisa ter pelo menos 12 caracteres."
+    if (( ${#ADMIN_PASSWORD} < 6 )); then
+      warn "A senha precisa ter pelo menos 6 caracteres."
       continue
     fi
     read -r -s -p 'Confirme a senha: ' password_confirmation
@@ -249,7 +293,14 @@ ask_proxy_access() {
     warn "As senhas não coincidem."
   done
 
-  success "Credencial de acesso definida para ${ADMIN_USERNAME}"
+  if [[ -n "$ADMIN_PASSWORD" ]]; then
+    OPENWEBUI_DESIRED_PASSWORD="$ADMIN_PASSWORD"
+  else
+    OPENWEBUI_DESIRED_PASSWORD="$OPENWEBUI_PREVIOUS_PASSWORD"
+  fi
+  [[ -n "$OPENWEBUI_DESIRED_PASSWORD" ]] || fail "A senha atual do Open WebUI não foi encontrada; informe uma nova senha."
+
+  success "Credencial de acesso definida para ${ADMIN_EMAIL}"
 }
 
 create_local_structure() {
@@ -269,6 +320,16 @@ create_proxy_credentials() {
     chmod 600 "${htpasswd_file}.tmp"
     mv "${htpasswd_file}.tmp" "$htpasswd_file"
   fi
+
+  local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
+  if [[ ! -s "$openwebui_env" ]]; then
+    local webui_secret
+    webui_secret="$(openssl rand -hex 32)"
+    printf 'WEBUI_ADMIN_EMAIL=%s\nWEBUI_ADMIN_PASSWORD=%s\nWEBUI_ADMIN_NAME=%s\nWEBUI_SECRET_KEY=%s\n' \
+      "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$ADMIN_EMAIL" "$webui_secret" >"${openwebui_env}.tmp"
+    chmod 600 "${openwebui_env}.tmp"
+    mv "${openwebui_env}.tmp" "$openwebui_env"
+  fi
   ADMIN_PASSWORD=''
 
   [[ -f "$htpasswd_file" ]] || fail "Não foi possível criar a credencial do proxy."
@@ -282,19 +343,21 @@ create_proxy_credentials() {
 }
 
 create_environment_file() {
-  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 agentgateway_ui_port=8788 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value
+  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 agentgateway_ui_port=8788 openwebui_port=3000 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value
   if [[ -f "$ENV_FILE" ]]; then
     existing_value="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && ui_port="$existing_value"
     existing_value="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && agentgateway_ui_port="$existing_value"
+    existing_value="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && openwebui_port="$existing_value"
     existing_value="$(sed -n 's/^WORKSPACE_TIMEZONE=//p' "$ENV_FILE" | tail -n 1)"
     [[ -n "$existing_value" ]] && workspace_timezone="$existing_value"
     existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 20 )) && repository_sync_concurrency="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_USERNAME=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_USERNAME" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_CHAT_MODEL=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_CHAT_MODEL" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -338,7 +401,7 @@ start_admin_panel_command() {
   if ! docker_compose up -d --build --force-recreate; then
     docker_compose ps -a
     docker_compose logs --tail=200 \
-      agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui
+      agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui ollama docling open-webui openwebui-bootstrap
     return 1
   fi
   # O nginx.conf é bind-mounted. Alterá-lo não faz o Compose recriar o
@@ -513,6 +576,86 @@ validate_agentgateway_command() {
   }
 }
 
+validate_openwebui_command() {
+  local openwebui_port
+  openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  docker_compose wait openwebui-bootstrap
+  curl -fsS "http://127.0.0.1:${openwebui_port}/health" >/dev/null || {
+    docker_compose logs --tail=200 ollama docling open-webui openwebui-bootstrap
+    return 1
+  }
+}
+
+migrate_openwebui_admin_command() {
+  local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
+  local openwebui_port webui_secret auth_payload auth_response token user_id update_payload update_response
+
+  # Em uma instalação nova, o usuário já foi criado com a credencial desejada.
+  if [[ -z "$OPENWEBUI_PREVIOUS_EMAIL" || -z "$OPENWEBUI_PREVIOUS_PASSWORD" ]]; then
+    ADMIN_PASSWORD=''
+    OPENWEBUI_PREVIOUS_PASSWORD=''
+    OPENWEBUI_DESIRED_PASSWORD=''
+    return 0
+  fi
+
+  # Sem mudança de e-mail ou senha, não há migração a executar.
+  if [[ "$ADMIN_EMAIL" == "$OPENWEBUI_PREVIOUS_EMAIL" && "$OPENWEBUI_DESIRED_PASSWORD" == "$OPENWEBUI_PREVIOUS_PASSWORD" ]]; then
+    ADMIN_PASSWORD=''
+    OPENWEBUI_PREVIOUS_PASSWORD=''
+    OPENWEBUI_DESIRED_PASSWORD=''
+    return 0
+  fi
+
+  openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  auth_payload="$(jq -cn \
+    --arg email "$OPENWEBUI_PREVIOUS_EMAIL" \
+    --arg password "$OPENWEBUI_PREVIOUS_PASSWORD" \
+    '{email:$email,password:$password}')"
+  if ! auth_response="$(printf '%s' "$auth_payload" | curl -fsS \
+    --max-time 30 \
+    "http://127.0.0.1:${openwebui_port}/api/v1/auths/signin" \
+    -H 'content-type: application/json' \
+    --data-binary @-)"; then
+    # Aceita também o estado em que o banco já foi alterado manualmente,
+    # mas o arquivo openwebui.env ainda contém a credencial anterior.
+    auth_payload="$(jq -cn \
+      --arg email "$ADMIN_EMAIL" \
+      --arg password "$OPENWEBUI_DESIRED_PASSWORD" \
+      '{email:$email,password:$password}')"
+    auth_response="$(printf '%s' "$auth_payload" | curl -fsS \
+      --max-time 30 \
+      "http://127.0.0.1:${openwebui_port}/api/v1/auths/signin" \
+      -H 'content-type: application/json' \
+      --data-binary @-)"
+  fi
+  token="$(printf '%s' "$auth_response" | jq -er '.token')"
+  user_id="$(printf '%s' "$auth_response" | jq -er '.id')"
+
+  update_payload="$(jq -cn \
+    --arg email "$ADMIN_EMAIL" \
+    --arg name "$ADMIN_EMAIL" \
+    --arg password "$OPENWEBUI_DESIRED_PASSWORD" \
+    '{email:$email,name:$name,password:$password}')"
+  update_response="$(printf '%s' "$update_payload" | curl -fsS \
+    --max-time 30 \
+    "http://127.0.0.1:${openwebui_port}/api/v1/users/${user_id}/update" \
+    -H "Authorization: Bearer ${token}" \
+    -H 'content-type: application/json' \
+    --data-binary @-)"
+  printf '%s' "$update_response" | jq -e --arg email "${ADMIN_EMAIL,,}" '.email == $email and .role == "admin"' >/dev/null
+
+  webui_secret="$(sed -n 's/^WEBUI_SECRET_KEY=//p' "$openwebui_env" | tail -n 1)"
+  [[ -n "$webui_secret" ]] || fail "WEBUI_SECRET_KEY não encontrada em ${openwebui_env}."
+  printf 'WEBUI_ADMIN_EMAIL=%s\nWEBUI_ADMIN_PASSWORD=%s\nWEBUI_ADMIN_NAME=%s\nWEBUI_SECRET_KEY=%s\n' \
+    "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$ADMIN_EMAIL" "$webui_secret" >"${openwebui_env}.tmp"
+  chmod 600 "${openwebui_env}.tmp"
+  mv "${openwebui_env}.tmp" "$openwebui_env"
+
+  ADMIN_PASSWORD=''
+  OPENWEBUI_PREVIOUS_PASSWORD=''
+  OPENWEBUI_DESIRED_PASSWORD=''
+}
+
 validate_installation_command() {
   set -a
   # shellcheck disable=SC1090
@@ -524,21 +667,24 @@ validate_installation_command() {
 }
 
 show_summary() {
-  local ui_port agentgateway_ui_port
+  local ui_port agentgateway_ui_port openwebui_port
   ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   agentgateway_ui_port="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   printf "\n${COLOR_GREEN}${COLOR_BOLD}✔ Instalação concluída${COLOR_RESET}\n\n"
   printf '  Repositórios : %s\n' "$REPOSITORIES_DIR"
   printf '  Cache        : %s\n' "$CACHE_DIR"
   printf '  Ambiente     : %s\n' "$ENV_FILE"
   printf '  Budget       : %s MB\n' "$CBM_MEM_BUDGET_MB"
   printf '  Executável   : %s\n' "$CBM_BIN"
-  printf '  Usuário web  : %s\n' "$ADMIN_USERNAME"
+  printf '  E-mail admin : %s\n' "$ADMIN_EMAIL"
+  printf '  Modelo Ollama: %s\n' "$OLLAMA_CHAT_MODEL"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
   printf '\nUI oficial do Codebase Memory:\n  http://<IP-ou-dominio>:%s/\n' "$ui_port"
   printf '\nPainel administrativo protegido:\n  http://<IP-ou-dominio>:%s/admin/\n\n' "$ui_port"
   printf 'AgentGateway Admin UI protegida:\n  http://<IP-ou-dominio>:%s/mcp-panel/\n' "$agentgateway_ui_port"
   printf '\nEndpoint MCP remoto:\n  http://<IP-ou-dominio>:%s/mcp\n\n' "$ui_port"
+  printf 'Open WebUI:\n  http://<IP-ou-dominio>:%s/\n\n' "$openwebui_port"
 }
 
 main() {
@@ -547,6 +693,7 @@ main() {
   printf "${COLOR_BOLD}Configuração inicial${COLOR_RESET}\n"
   info "Responda agora às perguntas necessárias. Depois disso, a instalação seguirá sem interrupções."
   ask_memory_budget
+  ask_ollama_model
   ask_proxy_access
   validate_sudo
   keep_sudo_alive
@@ -562,6 +709,8 @@ main() {
   run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
   run_step "Aguardando a UI do grafo ficar disponível" validate_graph_ui_command
   run_step "Aguardando a Admin UI do AgentGateway ficar disponível" validate_agentgateway_command
+  run_step "Baixando modelos e configurando o Open WebUI" validate_openwebui_command
+  run_step "Sincronizando a credencial administrativa do Open WebUI" migrate_openwebui_admin_command
   show_summary
 }
 

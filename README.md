@@ -7,15 +7,17 @@ Depois de instalado, o ambiente oferece:
 - painel para gerenciar workspaces e repositórios;
 - indexação e exploração de código pelo Codebase Memory;
 - endpoint MCP remoto protegido por token;
-- usuários MCP com acesso limitado aos repositórios autorizados;
+- token MCP automático por workspace, com acesso dinâmico aos seus repositórios;
+- usuários MCP individuais com acesso limitado aos repositórios autorizados;
 - sincronização manual ou agendada dos clones;
-- interface visual para explorar os grafos indexados.
+- interface visual para explorar os grafos indexados;
+- Open WebUI, Ollama e Docling executados pelo Docker Compose.
 
 ## Como funciona
 
-O administrador conecta uma conta do GitHub, organiza os repositórios em workspaces e inicia a primeira indexação. Em seguida, cria um usuário MCP para cada desenvolvedor e escolhe quais repositórios ele poderá consultar.
+O administrador conecta uma conta do GitHub, organiza os repositórios em workspaces e inicia a primeira indexação. Cada workspace recebe automaticamente um token MCP que acompanha todos os repositórios atualmente contidos nele. Usuários MCP individuais continuam disponíveis para acessos mais específicos.
 
-O cliente MCP se conecta ao endpoint HTTP do servidor usando o token individual:
+O cliente MCP se conecta ao endpoint HTTP do servidor usando um token de workspace ou individual:
 
 ```text
 Cliente MCP
@@ -27,7 +29,7 @@ http://<servidor>:8787/mcp
 Codebase Memory → índices dos repositórios autorizados
 ```
 
-O token individual limita tanto as ferramentas disponíveis quanto os projetos retornados por `list_projects`.
+O token limita tanto as ferramentas disponíveis quanto os projetos retornados por `list_projects`.
 
 ## Requisitos do servidor
 
@@ -52,10 +54,11 @@ chmod +x install.sh
 Durante a instalação, informe:
 
 - o limite de memória do Codebase Memory;
-- o usuário administrativo;
-- uma senha administrativa com pelo menos 12 caracteres.
+- o modelo Ollama que será baixado (`qwen3:14b` por padrão);
+- o e-mail administrativo;
+- uma senha administrativa com pelo menos 6 caracteres.
 
-O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers e valida o endpoint MCP. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual.
+O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers, baixa o modelo escolhido e o `bge-m3`, configura os exemplos do Open WebUI e valida o endpoint MCP. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual. Se o e-mail ou a senha mudar, o instalador autentica com a credencial anterior, atualiza o administrador no banco do Open WebUI e preserva chats, documentos e Knowledge Bases.
 
 Ao concluir, os serviços ficam disponíveis nos seguintes endereços:
 
@@ -65,10 +68,11 @@ Ao concluir, os serviços ficam disponíveis nos seguintes endereços:
 | Painel administrativo | `http://<servidor>:8787/admin/` |
 | Endpoint MCP | `http://<servidor>:8787/mcp` |
 | Painel do MCP Gateway | `http://<servidor>:8788/mcp-panel/` |
+| Open WebUI | `http://<servidor>:3000/` |
 
-As interfaces web usam o usuário e a senha definidos na instalação. O endpoint `/mcp` usa tokens MCP, não a senha administrativa.
+As interfaces web usam o e-mail e a senha definidos na instalação. O endpoint `/mcp` usa tokens MCP, não a senha administrativa.
 
-Se `UI_PORT` ou `AGENTGATEWAY_UI_PORT` forem alterados no `.env`, use as novas portas nos endereços acima.
+Se `UI_PORT`, `AGENTGATEWAY_UI_PORT` ou `OPENWEBUI_PORT` forem alterados no `.env`, use as novas portas nos endereços acima.
 
 ## Primeiro uso
 
@@ -84,7 +88,15 @@ Se `UI_PORT` ou `AGENTGATEWAY_UI_PORT` forem alterados no `.env`, use as novas p
 
 O token do GitHub precisa de leitura de metadados. Para repositórios privados, conceda também leitura de conteúdo. Restrinja o token à organização e aos repositórios necessários.
 
-## Criando um usuário MCP
+## Token MCP do workspace
+
+Ao criar um workspace, o painel gera e registra uma credencial MCP própria. No detalhe do workspace é possível exibir, copiar, rotacionar, revogar ou reativar o token.
+
+O acesso é calculado em cada chamada a partir dos repositórios atuais do workspace. Um repositório adicionado passa a ser permitido quando possuir um projeto indexado, e um repositório removido deixa de ser permitido imediatamente. O token é armazenado criptografado e nunca aparece nas listagens comuns da API.
+
+Inclua `data/secrets/mcp-workspace-encryption-key` nos backups. Sem essa chave, tokens restaurados não poderão ser revelados.
+
+## Criando um usuário MCP individual
 
 No painel administrativo:
 
@@ -98,7 +110,24 @@ O token individual é mostrado somente durante a criação, rotação ou reativa
 
 Não grave tokens no Git, no `README`, em skills, em `AGENTS.md` ou diretamente em configurações versionadas. Prefira variáveis de ambiente ou um cofre de segredos.
 
-Alterações de acesso passam a valer nas chamadas seguintes. Adicionar um novo repositório ao workspace não o libera automaticamente para usuários existentes.
+Alterações de acesso individual passam a valer nas chamadas seguintes. Diferentemente do token automático do workspace, um usuário individual mantém uma seleção explícita de repositórios.
+
+## Open WebUI, Ollama e Docling
+
+Os documentos são enviados normalmente pelo Open WebUI. O Open WebUI encaminha PDFs, documentos e imagens ao Docling, que executa OCR, preserva layout e extrai tabelas. Em seguida, o `bge-m3` no Ollama gera os embeddings usados pela Knowledge Base.
+
+Na primeira instalação, o bootstrap idempotente cria:
+
+- `Knowledge Base Sample`, vazia e pronta para uploads;
+- `MCP Admin`, ativa, validada contra o endpoint local e autenticada pelo token Sistema/Playground;
+- `Business Model Sample`, associado à Knowledge Base;
+- `Code Model Sample`, conectado ao `MCP Admin`.
+
+Os dois presets são exemplos, mas já recebem como modelo-base o modelo Ollama escolhido na instalação. O bootstrap valida a conexão MCP antes de salvá-la e associa a ferramenta ativa ao modelo de código.
+
+O `MCP Admin` usa a credencial Sistema/Playground e, portanto, possui acesso total a todos os projetos e ferramentas do MCP. Restrinja no Open WebUI quem pode acessar o `Code Model Sample` e a ferramenta. Para acessos com escopo por workspace ou por desenvolvedor, continue usando os tokens específicos criados pelo painel.
+
+A credencial administrativa e o `WEBUI_SECRET_KEY` ficam em `data/secrets/openwebui.env`, fora do Git. Os dados de Ollama, Docling e Open WebUI persistem em volumes Docker próprios.
 
 ## Conectando um cliente MCP
 
@@ -170,9 +199,12 @@ LOCAL_UID=1000
 LOCAL_GID=1000
 UI_PORT=8787
 AGENTGATEWAY_UI_PORT=8788
+OPENWEBUI_PORT=3000
 WORKSPACE_TIMEZONE=America/Maceio
 REPOSITORY_SYNC_CONCURRENCY=3
-ADMIN_USERNAME=admin
+ADMIN_EMAIL=admin@local.invalid
+ADMIN_USERNAME=admin@local.invalid
+OLLAMA_CHAT_MODEL=qwen3:14b
 ```
 
 As opções mais comuns são:
@@ -182,8 +214,12 @@ As opções mais comuns são:
 | `CBM_MEM_BUDGET_MB` | Limite de memória do Codebase Memory, em MB |
 | `UI_PORT` | Porta do painel, explorador e endpoint MCP |
 | `AGENTGATEWAY_UI_PORT` | Porta do painel do MCP Gateway |
+| `OPENWEBUI_PORT` | Porta pública do Open WebUI |
 | `WORKSPACE_TIMEZONE` | Fuso usado nos agendamentos |
 | `REPOSITORY_SYNC_CONCURRENCY` | Quantidade de sincronizações simultâneas, entre 1 e 20 |
+| `OLLAMA_CHAT_MODEL` | Modelo baixado pelo instalador; padrão `qwen3:14b` |
+| `OLLAMA_VERSION` | Tag da imagem Docker do Ollama |
+| `DOCLING_VERSION` | Tag da imagem Docker do Docling Serve |
 
 Execute novamente `./install.sh` depois de alterar configurações que exijam a recriação do ambiente.
 
@@ -194,6 +230,7 @@ codebase-memory-mcp-server/
 ├── app/             # painel administrativo e controle de acesso
 ├── agentgateway/    # configuração do gateway MCP
 ├── nginx/           # proxy HTTP e autenticação das interfaces
+├── openwebui/       # bootstrap declarativo da Knowledge Base e presets
 ├── cache/           # índices do Codebase Memory
 ├── data/            # estado e segredos da instalação
 ├── repositories/    # clones organizados por workspace
@@ -206,7 +243,8 @@ Mantenha o clone no mesmo caminho depois da instalação, pois o `.env` contém 
 
 ## Segurança
 
-- use um token MCP individual para cada desenvolvedor;
+- use o token do workspace somente onde o acesso a todos os seus repositórios for adequado;
+- use tokens individuais quando for necessário um escopo menor;
 - conceda acesso somente aos repositórios necessários;
 - mantenha `data/`, `.env` e os tokens fora do Git;
 - não exponha o servidor diretamente à internet sem TLS e controles de rede;

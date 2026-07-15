@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafeSegment, cronMatches, describeCron, ensureMcpGatewayGuardrail, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, nextCronOccurrence, parseCronExpression, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify, validateTimezone } from '../src/lib.js';
+import { assertSafeSegment, cronMatches, decryptWorkspaceToken, describeCron, encryptWorkspaceToken, ensureMcpGatewayGuardrail, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, nextCronOccurrence, parseCronExpression, parseLastJsonLine, publicMcpUser, publicWorkspace, reconcileRepositoryProjects, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify, validateTimezone } from '../src/lib.js';
 
 test('slugify normaliza nomes de workspaces', () => {
   assert.equal(slugify('Pagamentos & Cobrança'), 'pagamentos-cobranca');
@@ -101,6 +101,18 @@ test('gera tokens MCP fortes e uma fingerprint estável', () => {
   assert.notEqual(first, second);
   assert.equal(mcpTokenFingerprint(first).length, 64);
   assert.equal(mcpTokenFingerprint(first), mcpTokenFingerprint(first));
+});
+
+test('protege o token reversível do workspace com AES-GCM', () => {
+  const token = generateMcpToken();
+  const encrypted = encryptWorkspaceToken(token, 'segredo-de-teste-com-entropia');
+  assert.equal(encrypted.algorithm, 'aes-256-gcm');
+  assert.equal(decryptWorkspaceToken(encrypted, 'segredo-de-teste-com-entropia'), token);
+  assert.throws(() => decryptWorkspaceToken(encrypted, 'chave-incorreta'), /descriptografar/);
+  const exposed = publicWorkspace({ id: 'plataforma', name: 'Plataforma', mcpCredential: { ...encrypted, status: 'active', keyPrefix: 'cbm_mcp_abc…' } });
+  assert.equal('mcpCredential' in exposed, false);
+  assert.equal(exposed.mcpAccess.keyPrefix, 'cbm_mcp_abc…');
+  assert.equal(JSON.stringify(exposed).includes(encrypted.ciphertext), false);
 });
 
 test('gerencia somente as chaves MCP pertencentes ao painel', () => {

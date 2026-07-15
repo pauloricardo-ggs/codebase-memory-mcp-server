@@ -142,3 +142,92 @@ services:
       timeout: 3s
       retries: 6
       start_period: 5s
+
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.12.3}
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  docling:
+    image: quay.io/docling-project/docling-serve:${DOCLING_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_MAX_SYNC_WAIT: "600"
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "${DOCLING_WORKERS:-2}"
+      UVICORN_WORKERS: "1"
+      OMP_NUM_THREADS: "${DOCLING_CPU_THREADS:-4}"
+      MKL_NUM_THREADS: "${DOCLING_CPU_THREADS:-4}"
+    expose:
+      - "5001"
+    volumes:
+      - docling-data:/app/data
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.10.0
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+      docling:
+        condition: service_started
+    env_file:
+      - ./data/secrets/openwebui.env
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      RAG_EMBEDDING_ENGINE: ollama
+      RAG_EMBEDDING_MODEL: bge-m3
+      CONTENT_EXTRACTION_ENGINE: docling
+      DOCLING_SERVER_URL: http://docling:5001
+      DOCLING_PARAMS: '{"do_ocr":true,"force_ocr":false,"table_mode":"accurate","pipeline":"standard","ocr_engine":"tesseract","ocr_lang":["por","eng"]}'
+      ENABLE_RAG_HYBRID_SEARCH: "true"
+      ENABLE_KB_EXEC: "true"
+      ENABLE_SIGNUP: "false"
+      DEFAULT_USER_ROLE: pending
+      AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER: "120"
+    volumes:
+      - openwebui-data:/app/backend/data
+    ports:
+      - "${OPENWEBUI_PORT:-3000}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  openwebui-bootstrap:
+    build:
+      context: ./openwebui/bootstrap
+    restart: "no"
+    depends_on:
+      open-webui:
+        condition: service_healthy
+      proxy:
+        condition: service_healthy
+    env_file:
+      - ./data/secrets/openwebui.env
+    environment:
+      OPENWEBUI_URL: http://open-webui:8080
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_CHAT_MODEL: "${OLLAMA_CHAT_MODEL:-qwen3:14b}"
+      OLLAMA_EMBEDDING_MODEL: bge-m3
+      MCP_ADMIN_URL: http://proxy:8080/mcp
+      MCP_SYSTEM_TOKEN_FILE: /run/cbm-secrets/mcp-system-token
+    volumes:
+      - ./openwebui/bootstrap:/bootstrap:ro
+      - ./data/secrets:/run/cbm-secrets:ro
+
+volumes:
+  ollama-data:
+  docling-data:
+  openwebui-data:
