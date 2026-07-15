@@ -119,7 +119,32 @@ keep_sudo_alive() {
   SUDO_KEEPALIVE_PID=$!
 }
 
+validate_system_clock() {
+  if command -v chronyc >/dev/null 2>&1; then
+    chronyc tracking | awk -F: '
+      /System time/ {
+        gsub(/^[[:space:]]+/, "", $2)
+        split($2, fields, /[[:space:]]+/)
+        offset = fields[1] + 0
+        if (offset < 0) offset = -offset
+        found = 1
+        if (offset > 60) exit 1
+      }
+      END { if (!found) exit 1 }
+    ' || fail "O relógio do servidor está fora de sincronia. O instalador não altera a hora do host. Corrija com 'sudo chronyc -a makestep', valide com 'chronyc tracking' e execute novamente."
+    success "Relógio do sistema validado pelo Chrony"
+    return
+  fi
+
+  if command -v timedatectl >/dev/null 2>&1; then
+    if [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" != yes ]]; then
+      warn "O sistema não informa sincronização NTP ativa; o APT validará as datas dos repositórios."
+    fi
+  fi
+}
+
 install_dependencies() {
+  validate_system_clock
   run_step "Atualizando a lista de pacotes" sudo apt-get update
   run_step "Instalando dependências do sistema" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y ca-certificates curl git jq openssh-client openssl util-linux docker.io
 
