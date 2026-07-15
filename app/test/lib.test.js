@@ -51,9 +51,9 @@ test('autenticação Git usa Basic sem expor o token no argumento do clone', () 
   assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), 'x-access-token:github_pat_example');
 });
 
-test('indexação usa flags em vez do JSON depreciado', () => {
+test('indexação usa o argumento JSON aceito pelo Codebase Memory 0.8.1', () => {
   assert.deepEqual(indexRepositoryArguments('/data/repositories/time/api'), [
-    'cli', 'index_repository', '--repo-path', '/data/repositories/time/api'
+    'cli', 'index_repository', '{"repo_path":"/data/repositories/time/api"}'
   ]);
 });
 

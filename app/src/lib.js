@@ -174,7 +174,7 @@ export function gitAuthEnvironment(token) {
 }
 
 export function indexRepositoryArguments(repositoryPath) {
-  return ['cli', 'index_repository', '--repo-path', repositoryPath];
+  return ['cli', 'index_repository', JSON.stringify({ repo_path: repositoryPath })];
 }
 
 export function parseLastJsonLine(output) {
