@@ -25,6 +25,7 @@ main { min-width:0; }.topbar { min-height:116px; display:flex; align-items:cente
 .repo-title strong { font-size:13px; line-height:1.35; }
 .repo-title small { color:var(--muted); font-size:10px; margin-top:3px; }
 .language-badge { display:inline-flex; margin-top:8px; padding:2px 7px; color:#aeb8c5; background:#1a1f26; border:1px solid var(--line); border-radius:10px; font-size:9px; }
+.project-id { display:block; margin-top:7px; color:#788493; font-size:9px; }.project-id code { color:var(--accent); font-size:9px; overflow-wrap:anywhere; }
 .git-reference,.repo-status { display:grid; gap:6px; min-width:0; }
 .git-reference > small,.repo-status > small { color:#687280; font-size:9px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
 .git-reference > div { display:flex; align-items:baseline; gap:7px; min-width:0; }

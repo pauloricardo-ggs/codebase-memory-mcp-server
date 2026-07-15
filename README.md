@@ -219,6 +219,14 @@ selecionados. Adicionar um repositório futuramente ao mesmo workspace não o
 libera automaticamente. Alterar a seleção entra em vigor nas chamadas seguintes
 sem exigir rotação do token.
 
+O nome do GitHub exibido no painel, como `ma9internet/clapsapi-contrato`, é
+somente um rótulo amigável. O painel consulta `list_projects` e relaciona o
+`root_path` do índice ao caminho do clone para salvar o ID técnico realmente
+usado pelo MCP, como `data-repositories-claps-clapsapi-contrato`. Essa
+reconciliação ocorre na inicialização, ao abrir a seleção de acessos e
+periodicamente (a cada cinco minutos); o ID também aparece como **ID MCP** na
+interface.
+
 Tokens individuais expõem somente as ferramentas de análise e cada chamada é
 validada contra o argumento `project`. `list_projects` é filtrado para retornar
 apenas projetos autorizados. Ferramentas administrativas (`index_repository`,

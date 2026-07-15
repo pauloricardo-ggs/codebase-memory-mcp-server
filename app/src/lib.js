@@ -51,6 +51,24 @@ export function parseLastJsonLine(output) {
   return null;
 }
 
+export function reconcileRepositoryProjects(repositories, projects) {
+  const projectsByRoot = new Map((Array.isArray(projects) ? projects : [])
+    .filter(item => typeof item?.name === 'string' && item.name && typeof item?.root_path === 'string' && item.root_path)
+    .map(item => [path.resolve(item.root_path), item.name]));
+  let changed = false;
+  const reconciled = repositories.map(repository => {
+    if (typeof repository?.path !== 'string' || !repository.path) return repository;
+    const project = projectsByRoot.get(path.resolve(repository.path));
+    if ((repository.project || undefined) === project) return repository;
+    changed = true;
+    const updated = { ...repository };
+    if (project) updated.project = project;
+    else delete updated.project;
+    return updated;
+  });
+  return { repositories: reconciled, changed };
+}
+
 export async function loadState(file) {
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8'));

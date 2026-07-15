@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafeSegment, ensureMcpGatewayGuardrail, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify } from '../src/lib.js';
+import { assertSafeSegment, ensureMcpGatewayGuardrail, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify } from '../src/lib.js';
 
 test('slugify normaliza nomes de workspaces', () => {
   assert.equal(slugify('Pagamentos & Cobrança'), 'pagamentos-cobranca');
@@ -37,6 +37,22 @@ test('extrai o projeto da última linha JSON da indexação', () => {
   assert.deepEqual(parseLastJsonLine('level=info msg=start\n{"project":"workspace-api","status":"indexed"}\n'), {
     project: 'workspace-api', status: 'indexed'
   });
+});
+
+test('reconcilia o ID MCP pelo caminho real do repositório, não pelo nome do GitHub', () => {
+  const repositories = [
+    { accessId: 'repo-1', fullName: 'ma9internet/clapsapi-contrato', path: '/data/repositories/claps/clapsapi-contrato' },
+    { accessId: 'repo-2', fullName: 'ma9internet/legado', path: '/data/repositories/claps/legado', project: 'id-antigo' }
+  ];
+  const result = reconcileRepositoryProjects(repositories, [{
+    name: 'data-repositories-claps-clapsapi-contrato',
+    root_path: '/data/repositories/claps/clapsapi-contrato'
+  }]);
+
+  assert.equal(result.changed, true);
+  assert.equal(result.repositories[0].project, 'data-repositories-claps-clapsapi-contrato');
+  assert.equal('project' in result.repositories[1], false);
+  assert.equal(result.repositories[0].fullName, 'ma9internet/clapsapi-contrato');
 });
 
 test('credencial do GitHub persiste com permissão restrita', async t => {

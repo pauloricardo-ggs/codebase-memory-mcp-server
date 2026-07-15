@@ -5,11 +5,16 @@ import protoLoader from '@grpc/proto-loader';
 import path from 'node:path';
 import { authorizeToolCall, filterListProjectsResult, filterToolsListResult, startMcpGuardrailServer } from '../src/mcp-guardrail.js';
 
-const scopedAccess = { system: false, allowedProjects: new Set(['api-pedidos', 'portal-web']) };
+const scopedAccess = {
+  system: false,
+  allowedProjects: new Set(['api-pedidos', 'portal-web']),
+  knownProjects: new Set(['api-pedidos', 'portal-web', 'api-financeiro'])
+};
 
 test('guardrail permite análise somente nos projetos autorizados', () => {
   assert.equal(authorizeToolCall({ name: 'search_graph', arguments: { project: 'api-pedidos' } }, scopedAccess).allowed, true);
   assert.match(authorizeToolCall({ name: 'search_graph', arguments: { project: 'api-financeiro' } }, scopedAccess).reason, /não possui acesso/);
+  assert.match(authorizeToolCall({ name: 'search_graph', arguments: { project: 'projeto-inexistente' } }, scopedAccess).reason, /não existe ou ainda não foi indexado/);
   assert.match(authorizeToolCall({ name: 'search_graph', arguments: {} }, scopedAccess).reason, /exige o projeto/);
 });
 

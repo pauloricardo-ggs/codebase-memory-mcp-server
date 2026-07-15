@@ -114,6 +114,10 @@ export function authorizeToolCall(params, access) {
   }
   const project = typeof args.project === 'string' ? args.project : '';
   if (!project) return { allowed: false, reason: `A ferramenta ${toolName} exige o projeto do repositório.` };
+  const knownProjects = access.knownProjects || access.allowedProjects;
+  if (!knownProjects.has(project)) {
+    return { allowed: false, reason: `O repositório do projeto ${project} não existe ou ainda não foi indexado.` };
+  }
   if (!access.allowedProjects.has(project)) {
     return { allowed: false, reason: `O usuário não possui acesso ao repositório do projeto ${project}.` };
   }

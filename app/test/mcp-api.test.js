@@ -139,7 +139,8 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
       CBM_ALLOWED_ROOT: path.join(directory, 'repositories'),
       AGENTGATEWAY_ADMIN_URL: `http://127.0.0.1:${gatewayPort}`,
       MCP_GUARDRAIL_ADDR: `127.0.0.1:${guardrailPort}`,
-      MCP_GUARDRAIL_HOST: `admin:${guardrailPort}`
+      MCP_GUARDRAIL_HOST: `admin:${guardrailPort}`,
+      CBM_PROJECT_RECONCILE: 'false'
     },
     stdio: ['ignore', 'ignore', 'pipe']
   });
@@ -185,8 +186,10 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
 
   const allowedBeforeUpdate = await checkTool(guardrail, created.user.id, 'search_graph', { project: 'plataforma-api' });
   const deniedBeforeUpdate = await checkTool(guardrail, created.user.id, 'search_graph', { project: 'plataforma-worker' });
+  const missingProject = await checkTool(guardrail, created.user.id, 'search_graph', { project: 'financeiro' });
   assert.ok(allowedBeforeUpdate.pass);
   assert.equal(deniedBeforeUpdate.error.code, 'PERMISSION_DENIED');
+  assert.match(missingProject.error.reason, /não existe ou ainda não foi indexado/);
 
   const updatedAccess = await request(`http://127.0.0.1:${appPort}/api/mcp-users/${created.user.id}/repositories`, {
     method: 'PUT',

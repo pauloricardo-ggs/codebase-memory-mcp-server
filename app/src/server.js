@@ -4,7 +4,7 @@ import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeSegment, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify } from './lib.js';
+import { assertSafeSegment, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify } from './lib.js';
 import { startMcpGuardrailServer } from './mcp-guardrail.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -21,6 +21,7 @@ const UI_PORT = Number(process.env.UI_PORT);
 const AGENTGATEWAY_UI_PORT = Number(process.env.AGENTGATEWAY_UI_PORT);
 const AGENTGATEWAY_ADMIN_URL = String(process.env.AGENTGATEWAY_ADMIN_URL || 'http://agentgateway:15000').replace(/\/+$/, '');
 const MCP_GUARDRAIL_ADDR = process.env.MCP_GUARDRAIL_ADDR || '0.0.0.0:3001';
+const CBM_PROJECT_RECONCILE = process.env.CBM_PROJECT_RECONCILE !== 'false';
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
@@ -48,6 +49,8 @@ let githubCache = { at: 0, repositories: [] };
 const jobs = [];
 const locks = new Set();
 let mcpUserMutation = false;
+let projectReconciliation = null;
+let lastProjectReconciliationAt = 0;
 const MCP_SYSTEM_USER = {
   id: 'system-playground',
   name: 'Sistema / Playground',
@@ -91,6 +94,27 @@ function repository(workspaceId, repositoryId) {
 
 async function persist() { await saveState(STATE_FILE, state); }
 
+async function refreshRepositoryProjects({ force = false } = {}) {
+  if (!CBM_PROJECT_RECONCILE) return;
+  if (projectReconciliation) return projectReconciliation;
+  if (!force && Date.now() - lastProjectReconciliationAt < 30_000) return;
+  lastProjectReconciliationAt = Date.now();
+  projectReconciliation = (async () => {
+    const result = await run(CBM_BIN, ['cli', 'list_projects']);
+    let payload;
+    try { payload = JSON.parse(result.stdout.trim()); }
+    catch { payload = parseLastJsonLine(result.stdout); }
+    if (!Array.isArray(payload?.projects)) throw new Error('list_projects retornou um formato inválido.');
+    const reconciled = reconcileRepositoryProjects(state.repositories, payload.projects);
+    if (reconciled.changed) {
+      state.repositories = reconciled.repositories;
+      await persist();
+    }
+  })();
+  try { await projectReconciliation; }
+  finally { projectReconciliation = null; }
+}
+
 function mcpUser(id) {
   assertSafeSegment(id, 'Usuário MCP');
   const found = mcpUserStore.users.find(item => item.id === id);
@@ -121,14 +145,15 @@ function mcpRepositoryIds(input, { required = true } = {}) {
 }
 
 function mcpAccess(userId) {
-  if (userId === MCP_SYSTEM_USER.id) return { system: true, allowedProjects: new Set() };
+  const knownProjects = new Set(state.repositories.filter(item => item.project).map(item => item.project));
+  if (userId === MCP_SYSTEM_USER.id) return { system: true, allowedProjects: new Set(), knownProjects };
   const user = mcpUserStore.users.find(item => item.id === userId && item.status === 'active');
   if (!user) return null;
   const allowedRepositoryIds = new Set(user.repositoryIds || []);
   const allowedProjects = new Set(state.repositories
     .filter(item => allowedRepositoryIds.has(item.accessId) && item.project)
     .map(item => item.project));
-  return { system: false, allowedProjects };
+  return { system: false, allowedProjects, knownProjects };
 }
 
 async function commitMcpUserStoreOnly(nextStore) {
@@ -365,6 +390,7 @@ async function routeApi(request, response, url) {
     }
   }
   if (url.pathname === '/api/mcp-access-options' && request.method === 'GET') {
+    await refreshRepositoryProjects().catch(error => console.warn('Não foi possível atualizar os IDs MCP dos repositórios:', error.message));
     return json(response, 200, {
       workspaces: state.workspaces.map(item => ({
         id: item.id,
@@ -546,6 +572,10 @@ function serveStatic(response, pathname) {
   }).catch(() => { response.writeHead(404); response.end('Not found'); });
 }
 
+if (CBM_PROJECT_RECONCILE) {
+  await refreshRepositoryProjects({ force: true }).catch(error => console.warn('Não foi possível reconciliar os IDs MCP dos repositórios:', error.message));
+  setInterval(() => refreshRepositoryProjects({ force: true }).catch(error => console.warn('Falha ao reconciliar IDs MCP:', error.message)), 300_000).unref();
+}
 await startMcpGuardrailServer(mcpAccess, MCP_GUARDRAIL_ADDR);
 await provisionMcpSystemToken();
 
