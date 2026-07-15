@@ -53,7 +53,30 @@ Ao final, abra:
 http://<IP-ou-dominio>:8787/admin/
 ```
 
-O container `admin` não publica nenhuma porta no host. Apenas o container `proxy` publica `8787`; a porta interna `3000` não pode ser acessada diretamente.
+A interface administrativa do AgentGateway usa a mesma credencial do painel e
+fica disponível em:
+
+```text
+http://<IP-ou-dominio>:8788/mcp-panel/
+```
+
+O proxy mantém `/mcp-panel/` no navegador e traduz internamente esse prefixo
+para `/ui/`, caminho exigido pela interface oficial do AgentGateway.
+
+O endpoint MCP remoto fica disponível na rede local em:
+
+```text
+http://<IP-ou-dominio>:8787/mcp
+```
+
+O primeiro boot não cria API keys nem ativa a validação, permitindo testar o
+Playground da interface. O endpoint MCP fica temporariamente acessível para
+quem alcança a rede local. Ao cadastrar a primeira chave individual, ative a
+política `apiKey` em modo `strict`.
+
+Os containers `admin` e `agentgateway` não publicam portas diretamente no host.
+Somente o container `proxy` publica `8787` e `8788`; as portas internas `3000`
+e `15000` não podem ser acessadas diretamente.
 
 ## Primeiro uso
 
@@ -113,7 +136,59 @@ CBM_HOST_BIN=/home/usuario/.local/bin/codebase-memory-mcp
 LOCAL_UID=1000
 LOCAL_GID=1000
 UI_PORT=8787
+AGENTGATEWAY_UI_PORT=8788
 ADMIN_USERNAME=admin
+```
+
+`UI_PORT` controla tanto a porta publicada pelo proxy quanto a porta MCP
+anunciada pelo AgentGateway no Playground. `AGENTGATEWAY_UI_PORT` controla a
+porta pública da interface administrativa do gateway.
+
+Antes de cada inicialização, o serviço one-shot `agentgateway-config` sincroniza
+o valor numérico de `UI_PORT` em `data/agentgateway/config.yaml`. Isso é
+necessário porque o runtime do AgentGateway expande variáveis de ambiente, mas
+o Playground lê o YAML persistido diretamente. As demais alterações feitas
+pela Admin UI são preservadas.
+
+Na migração, uma política `apiKey` em modo `strict` com `keys: []` é removida,
+pois ela impediria o uso inicial do
+Playground sem oferecer uma credencial válida. Políticas que contenham chaves
+são preservadas.
+
+O serviço one-shot `agentgateway-ready` aguarda o listener MCP aceitar conexões
+antes de liberar a inicialização do Nginx. Isso evita respostas `502` durante a
+janela em que a Admin UI já está disponível, mas o listener MCP ainda está
+subindo.
+
+O instalador força a recriação dos containers depois dessa sincronização. Sem
+isso, o Docker Compose pode manter um AgentGateway antigo em execução porque a
+definição do serviço não mudou, mesmo que o arquivo persistido tenha recebido
+uma nova porta.
+
+Durante a instalação, o sistema também confirma que `/api/config` anuncia
+`UI_PORT` e executa uma chamada MCP `initialize` completa através do Nginx. A
+instalação falha com os logs do gateway caso qualquer uma dessas verificações
+não passe. Uma resposta `401` é considerada saudável quando a autenticação já
+estiver configurada, pois comprova que o endpoint foi alcançado e protegido.
+
+Para conferir manualmente a porta que o Playground está lendo:
+
+```bash
+docker compose exec -T proxy \
+  wget -qO- http://agentgateway:15000/api/config
+```
+
+O campo `mcp.port` deve ser igual ao `UI_PORT` do `.env`. Se a interface ainda
+mostrar outra porta, recrie o inicializador e o gateway:
+
+```bash
+docker compose up -d --force-recreate agentgateway-config agentgateway proxy
+```
+
+Os logs relevantes ficam disponíveis com:
+
+```bash
+docker compose logs --tail=200 agentgateway-config agentgateway proxy
 ```
 
 `LOCAL_UID` e `LOCAL_GID` fazem o container gravar arquivos com o mesmo proprietário do usuário que executou a instalação.

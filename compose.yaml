@@ -1,6 +1,53 @@
 name: codebase-memory
 
 services:
+  agentgateway-config:
+    image: alpine:3.22
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    restart: "no"
+    environment:
+      UI_PORT: "${UI_PORT:-8787}"
+    volumes:
+      - ./data/agentgateway:/config
+      - ./agentgateway/config.yaml:/bootstrap/config.yaml:ro
+      - ./agentgateway/configure.sh:/usr/local/bin/configure-agentgateway:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/configure-agentgateway"]
+
+  agentgateway:
+    image: cr.agentgateway.dev/agentgateway:v1.3.1
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    init: true
+    restart: unless-stopped
+    depends_on:
+      agentgateway-config:
+        condition: service_completed_successfully
+    command: ["-f", "/config/config.yaml"]
+    environment:
+      UI_PORT: "${UI_PORT:-8787}"
+      CBM_ALLOWED_ROOT: /data/repositories
+      CBM_CACHE_DIR: /data/cache
+      CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
+    volumes:
+      - ./data/agentgateway:/config
+      - ./repositories:/data/repositories:ro
+      - ./cache:/data/cache
+      - ${CBM_HOST_BIN}:/usr/local/bin/codebase-memory-mcp:ro
+    expose:
+      - "${UI_PORT:-8787}"
+      - "15000"
+
+  agentgateway-ready:
+    image: alpine:3.22
+    restart: "no"
+    depends_on:
+      agentgateway:
+        condition: service_started
+    environment:
+      UI_PORT: "${UI_PORT:-8787}"
+    volumes:
+      - ./agentgateway/wait-ready.sh:/usr/local/bin/wait-agentgateway:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/wait-agentgateway"]
+
   admin:
     build:
       context: ./app
@@ -14,6 +61,8 @@ services:
       CBM_CACHE_DIR: /data/cache
       CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
       CBM_BIN: /usr/local/bin/codebase-memory-mcp
+      UI_PORT: "${UI_PORT:-8787}"
+      AGENTGATEWAY_UI_PORT: "${AGENTGATEWAY_UI_PORT:-8788}"
     volumes:
       - ./data:/data/app
       - ./repositories:/data/repositories
@@ -32,14 +81,22 @@ services:
     image: nginx:1.27-alpine
     user: "${LOCAL_UID}:${LOCAL_GID}"
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "envsubst '$$UI_PORT' < /etc/nginx/nginx.conf.template > /tmp/nginx.conf && exec nginx -c /tmp/nginx.conf -g 'daemon off;'"
+    environment:
+      UI_PORT: "${UI_PORT:-8787}"
     depends_on:
+      agentgateway-ready:
+        condition: service_completed_successfully
       admin:
         condition: service_healthy
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf.template:ro
       - ./data/secrets/proxy:/etc/nginx/secrets:ro
     ports:
       - "${UI_PORT:-8787}:8080"
+      - "${AGENTGATEWAY_UI_PORT:-8788}:8081"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 10s

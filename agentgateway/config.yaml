@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+
+config:
+  adminAddr: 0.0.0.0:15000
+
+mcp:
+  # configure.sh substitui este marcador pelo UI_PORT numérico antes do boot.
+  # A Admin UI lê o YAML sem expandir variáveis, por isso não use $UI_PORT aqui.
+  port: __UI_PORT__
+  policies:
+    cors:
+      allowOrigins: ["*"]
+      allowHeaders: ["*"]
+      exposeHeaders: ["Mcp-Session-Id"]
+  targets:
+    - name: codebase-memory
+      stdio:
+        cmd: /usr/local/bin/codebase-memory-mcp

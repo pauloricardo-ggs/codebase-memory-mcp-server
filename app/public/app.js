@@ -6,6 +6,7 @@ let currentView = 'workspaces';
 let currentWorkspace = null;
 let jobs = [];
 let selectedRepositories = new Set();
+let publicConfig = {};
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
 const date = value => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle:'short', timeStyle:'short' }).format(new Date(value)) : '—';
@@ -32,6 +33,15 @@ function graphUrl(project = '') {
     url.searchParams.set('tab', 'graph');
     url.searchParams.set('project', project);
   }
+  return url.toString();
+}
+
+function mcpPanelUrl() {
+  const url = new URL(location.href);
+  url.port = String(publicConfig.agentgatewayUiPort);
+  url.pathname = '/mcp-panel/';
+  url.search = '';
+  url.hash = '';
   return url.toString();
 }
 
@@ -169,6 +179,7 @@ document.addEventListener('click', async event => {
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
     if (action === 'open-graph-ui') { window.open(graphUrl(target.dataset.project || ''), '_blank', 'noopener,noreferrer'); return; }
+    if (action === 'open-mcp-panel') { window.open(mcpPanelUrl(), '_blank', 'noopener,noreferrer'); return; }
     if (action === 'back') return renderWorkspaces();
     if (action === 'connect-github') return connectGithubModal();
     if (action === 'disconnect-github') { await api('/api/github/connection', { method:'DELETE' }); await renderGithub(); return toast('GitHub desconectado.'); }
@@ -182,5 +193,6 @@ document.addEventListener('click', async event => {
   } catch (error) { target.disabled = false; toast(error.message, 'error'); }
 });
 
+publicConfig = await api('/api/config');
 await Promise.all([renderGithub(), renderWorkspaces(), refreshJobs()]);
 setInterval(refreshJobs, 3000);

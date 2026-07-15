@@ -14,6 +14,8 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const GITHUB_CREDENTIALS_FILE = path.join(DATA_DIR, 'secrets', 'github-credentials.json');
 const CBM_BIN = process.env.CBM_BIN || 'codebase-memory-mcp';
 const PORT = Number(process.env.PORT || 3000);
+const UI_PORT = Number(process.env.UI_PORT);
+const AGENTGATEWAY_UI_PORT = Number(process.env.AGENTGATEWAY_UI_PORT);
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
@@ -147,6 +149,9 @@ async function routeApi(request, response, url) {
 
   if (request.method === 'GET' && url.pathname === '/api/health') {
     return json(response, 200, { status: 'ok' });
+  }
+  if (request.method === 'GET' && url.pathname === '/api/config') {
+    return json(response, 200, { uiPort: UI_PORT, agentgatewayUiPort: AGENTGATEWAY_UI_PORT });
   }
   if (url.pathname === '/api/github/connection') {
     if (request.method === 'GET') return json(response, 200, { connected: Boolean(githubToken), user: githubUser });

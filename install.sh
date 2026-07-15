@@ -8,6 +8,7 @@ REPOSITORIES_DIR="${BASE_DIR}/repositories"
 CACHE_DIR="${BASE_DIR}/cache"
 DATA_DIR="${BASE_DIR}/data"
 PROXY_SECRETS_DIR="${DATA_DIR}/secrets/proxy"
+AGENTGATEWAY_DATA_DIR="${DATA_DIR}/agentgateway"
 ENV_FILE="${BASE_DIR}/.env"
 CBM_BIN="${HOME}/.local/bin/codebase-memory-mcp"
 INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
@@ -227,9 +228,9 @@ ask_proxy_access() {
 }
 
 create_local_structure() {
-  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "$PROXY_SECRETS_DIR"
+  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR"
   chmod 755 "$REPOSITORIES_DIR"
-  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR"
+  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR"
   success "Estrutura local criada em ${BASE_DIR}"
 }
 
@@ -256,9 +257,15 @@ create_proxy_credentials() {
 }
 
 create_environment_file() {
-  local temporary_file="${ENV_FILE}.tmp"
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=8787\nADMIN_USERNAME=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ADMIN_USERNAME" >"$temporary_file"
+  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 agentgateway_ui_port=8788 existing_value
+  if [[ -f "$ENV_FILE" ]]; then
+    existing_value="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && ui_port="$existing_value"
+    existing_value="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && agentgateway_ui_port="$existing_value"
+  fi
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nADMIN_USERNAME=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$ADMIN_USERNAME" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -296,17 +303,26 @@ docker_compose() {
 
 start_admin_panel_command() {
   cd "$BASE_DIR"
-  docker_compose up -d --build
+  # O agentgateway-config altera um arquivo bind-mounted sem modificar a
+  # definição do serviço. Force a recriação para o AgentGateway reler a porta
+  # antes de o agentgateway-ready verificar o listener MCP.
+  if ! docker_compose up -d --build --force-recreate; then
+    docker_compose ps -a
+    docker_compose logs --tail=200 \
+      agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui
+    return 1
+  fi
   # O nginx.conf é bind-mounted. Alterá-lo não faz o Compose recriar o
   # container, portanto valide e recarregue o processo em toda instalação.
-  docker_compose exec -T proxy nginx -t
-  docker_compose exec -T proxy nginx -s reload
+  docker_compose exec -T proxy nginx -t -c /tmp/nginx.conf
+  docker_compose exec -T proxy nginx -s reload -c /tmp/nginx.conf
 }
 
 validate_admin_panel_command() {
-  local attempt
+  local attempt ui_port
+  ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   for attempt in {1..30}; do
-    if curl -fsS "http://127.0.0.1:8787/healthz" >/dev/null; then
+    if curl -fsS "http://127.0.0.1:${ui_port}/healthz" >/dev/null; then
       return 0
     fi
     sleep 1
@@ -327,6 +343,65 @@ validate_graph_ui_command() {
   return 1
 }
 
+validate_agentgateway_command() {
+  local attempt ui_port ready=0
+  ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  for attempt in {1..30}; do
+    if docker_compose exec -T proxy wget -q --spider "http://agentgateway:15000/ui/" \
+      && docker_compose exec -T proxy sh -c \
+        'wget -qO- http://agentgateway:15000/api/config | grep -Eq "\"port\"[[:space:]]*:[[:space:]]*$1"' \
+        _ "$ui_port"; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  if (( ready != 1 )); then
+    docker_compose logs --tail=100 agentgateway-config agentgateway proxy
+    return 1
+  fi
+
+  docker_compose exec -T admin node --input-type=module -e '
+    let lastError;
+    for (let attempt = 1; attempt <= 30; attempt += 1) {
+      try {
+        const response = await fetch("http://proxy:8080/mcp", {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: attempt,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-03-26",
+              capabilities: {},
+              clientInfo: { name: "install-check", version: "1.0" }
+            }
+          }),
+          signal: AbortSignal.timeout(5000)
+        });
+        const body = await response.text();
+        if (response.ok && body.includes("\"result\"")) process.exit(0);
+        if (response.status === 401) {
+          console.log("MCP alcançável e protegido por autenticação.");
+          process.exit(0);
+        }
+        lastError = new Error(`HTTP ${response.status} ${body}`);
+      } catch (error) {
+        lastError = error;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    throw new Error(`MCP initialize não ficou disponível: ${lastError?.message}`);
+  ' || {
+    docker_compose logs --tail=200 agentgateway-config agentgateway agentgateway-ready proxy
+    return 1
+  }
+}
+
 validate_installation_command() {
   set -a
   # shellcheck disable=SC1090
@@ -338,6 +413,9 @@ validate_installation_command() {
 }
 
 show_summary() {
+  local ui_port agentgateway_ui_port
+  ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  agentgateway_ui_port="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   printf "\n${COLOR_GREEN}${COLOR_BOLD}✔ Instalação concluída${COLOR_RESET}\n\n"
   printf '  Repositórios : %s\n' "$REPOSITORIES_DIR"
   printf '  Cache        : %s\n' "$CACHE_DIR"
@@ -346,8 +424,10 @@ show_summary() {
   printf '  Executável   : %s\n' "$CBM_BIN"
   printf '  Usuário web  : %s\n' "$ADMIN_USERNAME"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
-  printf '\nUI oficial do Codebase Memory:\n  http://<IP-ou-dominio>:8787/\n'
-  printf '\nPainel administrativo protegido:\n  http://<IP-ou-dominio>:8787/admin/\n\n'
+  printf '\nUI oficial do Codebase Memory:\n  http://<IP-ou-dominio>:%s/\n' "$ui_port"
+  printf '\nPainel administrativo protegido:\n  http://<IP-ou-dominio>:%s/admin/\n\n' "$ui_port"
+  printf 'AgentGateway Admin UI protegida:\n  http://<IP-ou-dominio>:%s/mcp-panel/\n' "$agentgateway_ui_port"
+  printf '\nEndpoint MCP remoto:\n  http://<IP-ou-dominio>:%s/mcp\n\n' "$ui_port"
 }
 
 main() {
@@ -370,6 +450,7 @@ main() {
   run_step "Construindo e iniciando o painel administrativo" start_admin_panel_command
   run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
   run_step "Aguardando a UI do grafo ficar disponível" validate_graph_ui_command
+  run_step "Aguardando a Admin UI do AgentGateway ficar disponível" validate_agentgateway_command
   show_summary
 }
 
