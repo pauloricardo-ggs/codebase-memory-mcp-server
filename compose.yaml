@@ -1,0 +1,29 @@
+name: codebase-memory
+
+services:
+  admin:
+    build:
+      context: ./app
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    init: true
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      APP_DATA_DIR: /data/app
+      CBM_ALLOWED_ROOT: /data/repositories
+      CBM_CACHE_DIR: /data/cache
+      CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
+      CBM_BIN: /usr/local/bin/codebase-memory-mcp
+    volumes:
+      - ./data:/data/app
+      - ./repositories:/data/repositories
+      - ./cache:/data/cache
+      - ${CBM_HOST_BIN}:/usr/local/bin/codebase-memory-mcp:ro
+    ports:
+      - "127.0.0.1:${UI_PORT:-8787}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s

@@ -1,6 +1,20 @@
 # Codebase Memory MCP Server
 
-Instalação centralizada do `codebase-memory-mcp` para indexar repositórios e disponibilizar esse conhecimento a clientes compatíveis com MCP.
+Painel administrativo para organizar workspaces, clonar repositórios do GitHub e gerenciar indexações do `codebase-memory-mcp`.
+
+## Funcionalidades
+
+- criação e exclusão segura de workspaces;
+- conexão temporária com GitHub por token fine-grained;
+- listagem alfabética e busca de repositórios acessíveis;
+- seleção múltipla e clone automático no workspace correto;
+- sincronização por `git pull --ff-only`;
+- indexação manual pelo Codebase Memory;
+- acompanhamento de operações, progresso, logs e erros;
+- persistência local dos workspaces e repositórios;
+- interface responsiva acessível somente pelo host local.
+
+O token do GitHub permanece apenas na memória do painel. Ele não é salvo no `.env`, no banco local, na URL do clone nem nos logs. Após reiniciar o container, é necessário conectar o GitHub novamente.
 
 ## Pré-requisitos
 
@@ -8,143 +22,171 @@ Instalação centralizada do `codebase-memory-mcp` para indexar repositórios e 
 - usuário comum com acesso a `sudo`;
 - acesso aos repositórios Git que serão indexados.
 
-O instalador não deve ser executado como `root`.
+O instalador configura Docker, Docker Compose, Git e o Codebase Memory MCP. Ele não deve ser executado diretamente como `root`.
 
 ## Instalação
 
-Clone este repositório no diretório em que os dados do serviço deverão permanecer:
+Clone este repositório no diretório em que os dados deverão permanecer:
 
 ```bash
-git clone git@github.com:pauloricardo-ggs/codebase-memory-mcp-server.git
+git clone <URL-DESTE-REPOSITORIO>
 cd codebase-memory-mcp-server
 chmod +x install.sh
 ./install.sh
 ```
 
-O `sudo` é utilizado somente para atualizar a lista de pacotes e instalar dependências. O executável, os repositórios e o cache pertencem ao usuário que executou o instalador.
+Durante a instalação, escolha o orçamento de memória:
 
-## Estrutura
+- 4 GB (`4096` MB);
+- 8 GB (`8192` MB);
+- 16 GB (`16384` MB);
+- 32 GB (`32768` MB);
+- outro valor inteiro informado em MB.
+
+As opções em GB são convertidas usando `1 GB = 1024 MB`, conforme o formato de `CBM_MEM_BUDGET_MB`.
+
+Ao final, abra:
+
+```text
+http://127.0.0.1:8787
+```
+
+Por segurança, o Compose publica o painel somente em `127.0.0.1`. Para acesso remoto, utilize uma VPN ou um proxy reverso com TLS e autenticação; não altere o bind para `0.0.0.0` sem adicionar esses controles.
+
+## Primeiro uso
+
+1. Clique em **Conectar GitHub**.
+2. Informe um token fine-grained com acesso de leitura aos repositórios desejados.
+3. Crie um workspace.
+4. Abra o workspace e clique em **Adicionar repositórios**.
+5. Pesquise, selecione os repositórios e confirme.
+6. Acompanhe os clones na tela **Operações**.
+7. Use **Indexar** quando o clone estiver pronto.
+
+Para listar repositórios, o token precisa de leitura de metadados. Para repositórios privados, conceda também leitura de conteúdo. Prefira restringir o token a uma única organização e somente aos repositórios necessários.
+
+## Estrutura local
 
 O próprio clone é a raiz da instalação:
 
 ```text
 codebase-memory-mcp-server/
-├── .env                 # gerado; ignorado pelo Git
-├── .sample_env
-├── cache/               # gerado; ignorado pelo Git
-├── repositories/        # gerado; ignorado pelo Git
-├── scripts/             # gerado; ignorado pelo Git
-│   ├── cbm-shell.sh
-│   └── load-env.sh
-├── templates/           # templates versionados dos scripts auxiliares
+├── app/                  # painel administrativo
+│   ├── public/           # interface web
+│   └── src/              # API e operações administrativas
+├── cache/                # índices; ignorado pelo Git
+├── data/                 # estado do painel; ignorado pelo Git
+├── repositories/         # clones por workspace; ignorado pelo Git
+├── .env                  # gerado; ignorado pelo Git
+├── compose.yaml
 ├── install.sh
 └── README.md
 ```
 
-Essa organização mantém configuração local, índices e clones fora do versionamento, sem separar os dados em outro diretório do usuário.
+Exemplo depois de adicionar repositórios:
 
-## Configuração automática
+```text
+repositories/
+├── pagamentos/
+│   ├── checkout-api/
+│   └── billing-worker/
+└── identidade/
+    └── authentication-api/
+```
 
-O instalador gera o `.env` de acordo com a localização real do clone:
+Mover o clone depois da instalação exige executar novamente o `install.sh`, pois o `.env` utiliza caminhos absolutos para operações no host.
+
+## Configuração gerada
+
+O instalador cria um `.env` semelhante a:
 
 ```dotenv
 CBM_CACHE_DIR=/caminho/do/clone/cache
 CBM_ALLOWED_ROOT=/caminho/do/clone/repositories
 CBM_MEM_BUDGET_MB=8192
+CBM_HOST_BIN=/home/usuario/.local/bin/codebase-memory-mcp
+LOCAL_UID=1000
+LOCAL_GID=1000
+UI_PORT=8787
 ```
 
-Não é necessário editar `.sample_env` nem criar o `.env` manualmente.
+`LOCAL_UID` e `LOCAL_GID` fazem o container gravar arquivos com o mesmo proprietário do usuário que executou a instalação.
 
-Também são aplicadas estas configurações:
+## Indexação
+
+O instalador mantém:
 
 ```text
 auto_index = false
 auto_watch = true
 ```
 
-### Por que `auto_index=false`?
+`CBM_ALLOWED_ROOT` restringe os caminhos aceitos, enquanto `auto_index=false` mantém a primeira indexação como uma ação administrativa explícita. O botão **Indexar** executa essa ação pelo backend do painel.
 
-`CBM_ALLOWED_ROOT` e `auto_index` têm responsabilidades diferentes:
+## Operação do painel
 
-- `CBM_ALLOWED_ROOT` restringe os caminhos aceitos para indexação;
-- `auto_index` decide se o projeto detectado na inicialização de uma sessão MCP será indexado automaticamente.
-
-Portanto, manter `auto_index=false` continua sendo adequado para uma instalação centralizada: a raiz permitida estabelece o limite de segurança e a primeira indexação permanece uma ação administrativa explícita. Repositórios já indexados podem continuar sendo atualizados pelo watcher com `auto_watch=true`.
-
-## O que o instalador faz
-
-1. valida o sistema operacional, o usuário e o acesso ao `sudo`;
-2. instala e valida as dependências;
-3. pergunta o budget de memória;
-4. cria `repositories/`, `cache/` e `scripts/` dentro do clone;
-5. gera o `.env` com caminhos absolutos e permissão `600`;
-6. instala a versão com interface do `codebase-memory-mcp`, caso necessário;
-7. configura `auto_index=false` e `auto_watch=true`;
-8. gera os scripts auxiliares;
-9. valida o executável, a configuração e os diretórios.
-
-Etapas demoradas apresentam um indicador de progresso em terminais interativos. Se alguma delas falhar, sua saída é exibida para diagnóstico.
-
-O instalador pode ser executado novamente. O budget será perguntado outra vez e o `.env` será regenerado para refletir a localização atual do clone.
-
-## Uso administrativo
-
-Abra um shell com o ambiente carregado:
+Verifique os containers:
 
 ```bash
-./scripts/cbm-shell.sh
+docker compose ps
 ```
 
-Ou carregue as variáveis no shell atual:
+Consulte os logs:
 
 ```bash
-source ./scripts/load-env.sh
+docker compose logs -f admin
 ```
 
-Verifique a instalação:
+Reinicie o painel:
 
 ```bash
-codebase-memory-mcp --version
-codebase-memory-mcp config list
+docker compose restart admin
 ```
 
-## Repositórios e primeira indexação
-
-Clone cada repositório dentro de `repositories/`. Subdiretórios organizacionais podem ser usados, mas cada repositório indexado deve possuir sua própria raiz Git:
-
-```text
-repositories/
-├── workspace-1/
-│   ├── repo-1/
-│   └── repo-2/
-└── workspace-2/
-    └── repo-3/
-```
-
-Faça a primeira indexação explicitamente, usando um caminho absoluto:
+Atualize a imagem depois de alterar o código:
 
 ```bash
-./scripts/cbm-shell.sh
-
-codebase-memory-mcp cli index_repository \
-  "{\"repo_path\":\"${CBM_ALLOWED_ROOT}/workspace-1/repo-1\"}"
-
-codebase-memory-mcp cli list_projects
+docker compose up -d --build
 ```
 
-## AgentGateway
+Pare o painel sem excluir dados:
 
-Ao configurar o AgentGateway, utilize o arquivo `.env` deste clone como `EnvironmentFile` e o executável em `$HOME/.local/bin/codebase-memory-mcp`. Use os caminhos absolutos mostrados ao final da instalação.
+```bash
+docker compose down
+```
 
-A exposição em rede deve incluir TLS, autenticação, autorização, limitação das ferramentas administrativas, logs, métricas e credenciais Git somente leitura.
+## Comportamento das exclusões
 
-## Segurança e versionamento
+- Um workspace só pode ser excluído quando não possui repositórios gerenciados.
+- Uma pasta de workspace com arquivos desconhecidos não é apagada automaticamente.
+- Excluir um repositório remove seu clone local depois de uma confirmação na interface.
+- Operações concorrentes no mesmo repositório são bloqueadas.
+- `cache/`, `data/` e `repositories/` não são removidos por `docker compose down`.
 
-O `.gitignore` exclui:
+## Desenvolvimento
 
-- `.env` e seu arquivo temporário;
-- `cache/`;
-- `repositories/`;
-- `scripts/` gerados.
+Os testes do backend não possuem dependências externas:
 
-O `.env` recebe permissão `600`, o cache recebe `700` e a raiz permitida nunca deve apontar para o diretório pessoal completo nem para `/`.
+```bash
+cd app
+npm test
+```
+
+Valide o Compose:
+
+```bash
+docker compose config
+```
+
+## Segurança
+
+Esta primeira versão é um painel administrativo de host único:
+
+- escuta somente em `127.0.0.1`;
+- não persiste o token do GitHub;
+- valida identificadores e mantém caminhos dentro da raiz permitida;
+- não utiliza shell para construir comandos Git ou Codebase Memory;
+- executa o container com UID/GID não privilegiados;
+- limita as montagens aos diretórios necessários e ao binário somente leitura.
+
+Antes de disponibilizar o painel em rede, adicione autenticação, autorização, TLS, auditoria e proteção contra tentativas repetidas. Para uma integração corporativa permanente com o GitHub, a evolução recomendada é substituir o PAT por uma GitHub App com permissões mínimas e tokens de curta duração.

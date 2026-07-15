@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BASE_DIR="$SCRIPT_DIR"
 REPOSITORIES_DIR="${BASE_DIR}/repositories"
 CACHE_DIR="${BASE_DIR}/cache"
-SCRIPTS_DIR="${BASE_DIR}/scripts"
+DATA_DIR="${BASE_DIR}/data"
 ENV_FILE="${BASE_DIR}/.env"
 CBM_BIN="${HOME}/.local/bin/codebase-memory-mcp"
 INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
@@ -99,12 +99,24 @@ validate_sudo() {
 
 install_dependencies() {
   run_step "Atualizando a lista de pacotes" sudo apt-get update
-  run_step "Instalando dependências do sistema" sudo apt-get install -y ca-certificates curl git jq openssh-client util-linux
+  run_step "Instalando dependências do sistema" sudo apt-get install -y ca-certificates curl git jq openssh-client util-linux docker.io
+
+  if ! docker compose version >/dev/null 2>&1 && ! sudo docker compose version >/dev/null 2>&1; then
+    if apt-cache show docker-compose-v2 >/dev/null 2>&1; then
+      run_step "Instalando Docker Compose" sudo apt-get install -y docker-compose-v2
+    else
+      run_step "Instalando Docker Compose" sudo apt-get install -y docker-compose-plugin
+    fi
+  fi
 
   local command_name
-  for command_name in bash curl git jq flock ssh; do
+  for command_name in bash curl git jq flock ssh docker; do
     command -v "$command_name" >/dev/null 2>&1 || fail "Dependência não encontrada: ${command_name}"
   done
+
+  if ! sudo docker info >/dev/null 2>&1; then
+    run_step "Iniciando o serviço do Docker" sudo systemctl enable --now docker
+  fi
 }
 
 ask_memory_budget() {
@@ -143,16 +155,16 @@ ask_memory_budget() {
 }
 
 create_local_structure() {
-  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$SCRIPTS_DIR"
-  chmod 755 "$REPOSITORIES_DIR" "$SCRIPTS_DIR"
-  chmod 700 "$CACHE_DIR"
+  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR"
+  chmod 755 "$REPOSITORIES_DIR"
+  chmod 700 "$CACHE_DIR" "$DATA_DIR"
   success "Estrutura local criada em ${BASE_DIR}"
 }
 
 create_environment_file() {
   local temporary_file="${ENV_FILE}.tmp"
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=8787\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -180,21 +192,29 @@ configure_codebase_memory_command() {
   "$CBM_BIN" config set auto_watch true
 }
 
-create_helpers() {
-  local helper_file="${SCRIPTS_DIR}/cbm-shell.sh"
-  local loader_file="${SCRIPTS_DIR}/load-env.sh"
+docker_compose() {
+  if docker info >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    sudo docker compose "$@"
+  fi
+}
 
-  sed \
-    -e "s|@ENV_FILE@|${ENV_FILE}|g" \
-    -e "s|@CBM_BIN@|${CBM_BIN}|g" \
-    "${SCRIPT_DIR}/templates/cbm-shell.sh.template" >"$helper_file"
-  chmod 700 "$helper_file"
+start_admin_panel_command() {
+  cd "$BASE_DIR"
+  docker_compose up -d --build
+}
 
-  sed \
-    -e "s|@ENV_FILE@|${ENV_FILE}|g" \
-    "${SCRIPT_DIR}/templates/load-env.sh.template" >"$loader_file"
-  chmod 700 "$loader_file"
-  success "Scripts auxiliares gerados"
+validate_admin_panel_command() {
+  local attempt
+  for attempt in {1..30}; do
+    if curl -fsS "http://127.0.0.1:8787/api/health" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  docker_compose logs --tail=100 admin
+  return 1
 }
 
 validate_installation_command() {
@@ -215,7 +235,7 @@ show_summary() {
   printf '  Budget       : %s MB\n' "$CBM_MEM_BUDGET_MB"
   printf '  Executável   : %s\n' "$CBM_BIN"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
-  printf '\nAbra o ambiente administrativo com:\n  %s/cbm-shell.sh\n\n' "$SCRIPTS_DIR"
+  printf '\nPainel administrativo:\n  http://127.0.0.1:8787\n\n'
 }
 
 main() {
@@ -228,8 +248,9 @@ main() {
   create_environment_file
   install_codebase_memory
   run_step "Aplicando configurações do Codebase Memory" configure_codebase_memory_command
-  create_helpers
   run_step "Validando a instalação" validate_installation_command
+  run_step "Construindo e iniciando o painel administrativo" start_admin_panel_command
+  run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
   show_summary
 }
 

@@ -4,7 +4,7 @@
 # Dados gerados pelo instalador
 /cache/
 /repositories/
-/scripts/
+/data/
 
 # Arquivos temporários do instalador
 .env.tmp

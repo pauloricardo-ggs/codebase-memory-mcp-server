@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Codebase Memory Admin</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">CM</span><div><strong>Codebase Memory</strong><small>Admin console</small></div></div>
+      <nav>
+        <button class="nav-item active" data-view="workspaces"><span>⌘</span> Workspaces</button>
+        <button class="nav-item" data-view="jobs"><span>↻</span> Operações <b id="job-count" hidden>0</b></button>
+      </nav>
+      <div class="github-card" id="github-card"></div>
+      <footer>Dados locais · acesso privado</footer>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow" id="breadcrumb">Administração</p><h1 id="page-title">Workspaces</h1></div>
+        <div id="header-actions"><button class="button primary" data-action="new-workspace">＋ Novo workspace</button></div>
+      </header>
+      <section id="content" class="content"><div class="loading"><i></i> Carregando painel…</div></section>
+    </main>
+  </div>
+
+  <dialog id="modal"><form method="dialog"><button class="close" value="cancel" aria-label="Fechar">×</button><div id="modal-content"></div></form></dialog>
+  <div id="toasts" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
