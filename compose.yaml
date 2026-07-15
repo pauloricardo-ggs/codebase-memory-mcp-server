@@ -20,7 +20,7 @@ services:
       - ./cache:/data/cache
       - ${CBM_HOST_BIN}:/usr/local/bin/codebase-memory-mcp:ro
     ports:
-      - "127.0.0.1:${UI_PORT:-8787}:3000"
+      - "${UI_PORT:-8787}:3000"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 10s
