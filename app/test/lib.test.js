@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafeSegment, ensureMcpGatewayGuardrail, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify } from '../src/lib.js';
+import { assertSafeSegment, cronMatches, describeCron, ensureMcpGatewayGuardrail, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, nextCronOccurrence, parseCronExpression, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify, validateTimezone } from '../src/lib.js';
 
 test('slugify normaliza nomes de workspaces', () => {
   assert.equal(slugify('Pagamentos & Cobrança'), 'pagamentos-cobranca');
@@ -17,6 +17,30 @@ test('safeChild mantém caminhos dentro da raiz', () => {
 test('identificadores recusam path traversal', () => {
   assert.throws(() => assertSafeSegment('../etc'));
   assert.equal(assertSafeSegment('meu-workspace'), 'meu-workspace');
+});
+
+test('cron padrão executa no minuto zero de cada hora', () => {
+  assert.equal(parseCronExpression('0 * * * *').expression, '0 * * * *');
+  assert.equal(cronMatches('0 * * * *', new Date('2026-07-15T14:00:00Z'), 'UTC'), true);
+  assert.equal(cronMatches('0 * * * *', new Date('2026-07-15T14:01:00Z'), 'UTC'), false);
+  assert.equal(nextCronOccurrence('0 * * * *', 'UTC', new Date('2026-07-15T14:20:00Z')).toISOString(), '2026-07-15T15:00:00.000Z');
+});
+
+test('descreve semanticamente os crons mais comuns sem ocultar combinações', () => {
+  assert.equal(describeCron('0 * * * *'), 'Atualiza a cada hora');
+  assert.equal(describeCron('*/15 * * * *'), 'Atualiza a cada 15 minutos');
+  assert.equal(describeCron('0 2,4 * * *'), 'Atualiza diariamente às 2h e às 4h');
+  assert.equal(describeCron('0,30 2,4 * * *'), 'Atualiza diariamente às 2h, às 2h30, às 4h e às 4h30');
+  assert.equal(describeCron('0 2 * * 1-5'), 'Atualiza de segunda a sexta às 2h');
+});
+
+test('cron valida campos, passos e fuso horário', () => {
+  assert.equal(cronMatches('*/15 9-17 * * 1-5', new Date('2026-07-15T15:30:00Z'), 'UTC'), true);
+  assert.equal(cronMatches('5/10 * * * *', new Date('2026-07-15T15:25:00Z'), 'UTC'), true);
+  assert.throws(() => parseCronExpression('* * *'), /cinco campos/);
+  assert.throws(() => parseCronExpression('60 * * * *'), /fora do intervalo/);
+  assert.equal(validateTimezone('America/Maceio'), 'America/Maceio');
+  assert.throws(() => validateTimezone('Brasil/FusoInexistente'), /Fuso horário inválido/);
 });
 
 test('autenticação Git usa Basic sem expor o token no argumento do clone', () => {

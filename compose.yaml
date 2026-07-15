@@ -67,6 +67,8 @@ services:
       CBM_BIN: /usr/local/bin/codebase-memory-mcp
       UI_PORT: "${UI_PORT:-8787}"
       AGENTGATEWAY_UI_PORT: "${AGENTGATEWAY_UI_PORT:-8788}"
+      WORKSPACE_TIMEZONE: "${WORKSPACE_TIMEZONE:-America/Maceio}"
+      REPOSITORY_SYNC_CONCURRENCY: "${REPOSITORY_SYNC_CONCURRENCY:-3}"
       AGENTGATEWAY_ADMIN_URL: http://agentgateway:15000
       MCP_GUARDRAIL_ADDR: 0.0.0.0:3001
       MCP_GUARDRAIL_HOST: admin:3001

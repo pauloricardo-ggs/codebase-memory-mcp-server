@@ -9,6 +9,7 @@ Painel administrativo para organizar workspaces, clonar repositórios do GitHub 
 - listagem alfabética e busca de repositórios acessíveis;
 - seleção múltipla e clone automático no workspace correto;
 - sincronização por `git pull --ff-only`;
+- sincronização automática por workspace, com cron configurável e fila global;
 - indexação manual pelo Codebase Memory;
 - acompanhamento de operações, progresso, logs e erros;
 - persistência local dos workspaces e repositórios;
@@ -204,12 +205,24 @@ LOCAL_UID=1000
 LOCAL_GID=1000
 UI_PORT=8787
 AGENTGATEWAY_UI_PORT=8788
+WORKSPACE_TIMEZONE=America/Maceio
+REPOSITORY_SYNC_CONCURRENCY=3
 ADMIN_USERNAME=admin
 ```
 
 `UI_PORT` controla tanto a porta publicada pelo proxy quanto a porta MCP
 anunciada pelo AgentGateway no Playground. `AGENTGATEWAY_UI_PORT` controla a
 porta pública da interface administrativa do gateway.
+
+Cada workspace possui uma rotina de sincronização criada e ativada por padrão
+com o cron `0 * * * *` (minuto zero de cada hora). A rotina executa somente
+`git pull --ff-only`; o watcher do Codebase Memory é responsável por detectar
+as mudanças e atualizar o índice. O cron e o fuso podem ser alterados, e a
+rotina pode ser desativada ou executada imediatamente no detalhe do workspace.
+
+`REPOSITORY_SYNC_CONCURRENCY` limita os pulls simultâneos na instalação inteira,
+somando todos os workspaces e as sincronizações manuais. O valor padrão é `3`
+e o intervalo aceito pelo backend é de `1` a `20`.
 
 Antes de cada inicialização, o serviço one-shot `agentgateway-config` sincroniza
 o valor numérico de `UI_PORT` em `data/agentgateway/config.yaml` e, no primeiro

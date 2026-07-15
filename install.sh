@@ -257,15 +257,19 @@ create_proxy_credentials() {
 }
 
 create_environment_file() {
-  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 agentgateway_ui_port=8788 existing_value
+  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 agentgateway_ui_port=8788 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value
   if [[ -f "$ENV_FILE" ]]; then
     existing_value="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && ui_port="$existing_value"
     existing_value="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && agentgateway_ui_port="$existing_value"
+    existing_value="$(sed -n 's/^WORKSPACE_TIMEZONE=//p' "$ENV_FILE" | tail -n 1)"
+    [[ -n "$existing_value" ]] && workspace_timezone="$existing_value"
+    existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 20 )) && repository_sync_concurrency="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nADMIN_USERNAME=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$ADMIN_USERNAME" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_USERNAME=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_USERNAME" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"

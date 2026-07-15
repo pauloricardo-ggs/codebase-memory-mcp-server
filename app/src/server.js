@@ -4,7 +4,7 @@ import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeSegment, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify } from './lib.js';
+import { assertSafeSegment, DEFAULT_TIMEZONE, DEFAULT_WORKSPACE_CRON, cronMatches, describeCron, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, nextCronOccurrence, parseCronExpression, parseLastJsonLine, publicMcpUser, reconcileRepositoryProjects, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify, validateTimezone } from './lib.js';
 import { startMcpGuardrailServer } from './mcp-guardrail.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -22,10 +22,21 @@ const AGENTGATEWAY_UI_PORT = Number(process.env.AGENTGATEWAY_UI_PORT);
 const AGENTGATEWAY_ADMIN_URL = String(process.env.AGENTGATEWAY_ADMIN_URL || 'http://agentgateway:15000').replace(/\/+$/, '');
 const MCP_GUARDRAIL_ADDR = process.env.MCP_GUARDRAIL_ADDR || '0.0.0.0:3001';
 const CBM_PROJECT_RECONCILE = process.env.CBM_PROJECT_RECONCILE !== 'false';
+const WORKSPACE_TIMEZONE = process.env.WORKSPACE_TIMEZONE || DEFAULT_TIMEZONE;
+const REPOSITORY_SYNC_CONCURRENCY = Math.max(1, Math.min(20, Number.parseInt(process.env.REPOSITORY_SYNC_CONCURRENCY || '3', 10) || 3));
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
 let state = await loadState(STATE_FILE);
+function defaultUpdateSchedule() {
+  return { enabled: true, cron: DEFAULT_WORKSPACE_CRON, timezone: WORKSPACE_TIMEZONE, lastRunAt: null, lastRunStatus: null, lastScheduledMinute: null };
+}
+let schedulesMigrated = false;
+state.workspaces = state.workspaces.map(item => {
+  if (item.updateSchedule) return item;
+  schedulesMigrated = true;
+  return { ...item, updateSchedule: defaultUpdateSchedule() };
+});
 let mcpUserStore = await loadMcpUserStore(MCP_USERS_FILE);
 let stateMigrated = false;
 state.repositories = state.repositories.map(item => {
@@ -39,7 +50,7 @@ mcpUserStore.users = mcpUserStore.users.map(item => {
   mcpUsersMigrated = true;
   return { ...item, repositoryIds: [] };
 });
-if (stateMigrated) await saveState(STATE_FILE, state);
+if (stateMigrated || schedulesMigrated) await saveState(STATE_FILE, state);
 if (mcpUsersMigrated) await saveMcpUserStore(MCP_USERS_FILE, mcpUserStore);
 let mcpSystemToken = await loadSecret(MCP_SYSTEM_TOKEN_FILE);
 const storedGithubCredentials = await loadCredentials(GITHUB_CREDENTIALS_FILE);
@@ -48,6 +59,10 @@ let githubUser = storedGithubCredentials?.user ?? null;
 let githubCache = { at: 0, repositories: [] };
 const jobs = [];
 const locks = new Set();
+const syncQueues = new Map();
+const syncWorkspaceOrder = [];
+const activeWorkspaceSyncs = new Set();
+let activeRepositorySyncs = 0;
 let mcpUserMutation = false;
 let projectReconciliation = null;
 let lastProjectReconciliationAt = 0;
@@ -275,6 +290,20 @@ function publicRepository(item) {
   return { ...item, path: undefined };
 }
 
+function publicUpdateSchedule(selectedWorkspace) {
+  const schedule = selectedWorkspace.updateSchedule;
+  let nextRunAt = null;
+  let configurationError = null;
+  if (schedule.enabled) {
+    try { nextRunAt = nextCronOccurrence(schedule.cron, schedule.timezone).toISOString(); }
+    catch (error) { configurationError = error.message; }
+  }
+  let description;
+  try { description = describeCron(schedule.cron); }
+  catch { description = `Cron inválido: ${schedule.cron}`; }
+  return { ...schedule, description, nextRunAt, configurationError };
+}
+
 async function github(endpoint, token = githubToken) {
   if (!token) throw new Error('Conecte o GitHub primeiro.');
   const response = await fetch(`https://api.github.com${endpoint}`, {
@@ -349,6 +378,130 @@ function createJob(type, label, lockKey, operation) {
     }
   });
   return job;
+}
+
+function addJob(job) {
+  jobs.unshift(job);
+  jobs.splice(50);
+  return job;
+}
+
+function takeSyncTask() {
+  while (syncWorkspaceOrder.length) {
+    const workspaceId = syncWorkspaceOrder.shift();
+    const queue = syncQueues.get(workspaceId);
+    if (!queue?.length) { syncQueues.delete(workspaceId); continue; }
+    const task = queue.shift();
+    if (queue.length) syncWorkspaceOrder.push(workspaceId);
+    else syncQueues.delete(workspaceId);
+    return task;
+  }
+  return null;
+}
+
+function pumpSyncQueue() {
+  while (activeRepositorySyncs < REPOSITORY_SYNC_CONCURRENCY) {
+    const task = takeSyncTask();
+    if (!task) return;
+    activeRepositorySyncs += 1;
+    const { item, job, lockKey, resolve } = task;
+    setImmediate(async () => {
+      job.status = 'running';
+      job.startedAt = new Date().toISOString();
+      item.syncStatus = 'syncing';
+      delete item.syncError;
+      const log = text => { job.log = `${job.log}${text}`.slice(-50_000); };
+      try {
+        const previousCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: item.path })).stdout.trim();
+        await run('git', ['pull', '--ff-only'], { cwd: item.path, env: gitAuthEnvironment(githubToken), onOutput: log });
+        const currentCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: item.path })).stdout.trim();
+        item.commit = currentCommit.slice(0, 7);
+        item.lastSyncAt = new Date().toISOString();
+        item.syncStatus = 'idle';
+        job.changed = previousCommit !== currentCommit;
+        job.status = 'completed';
+        job.progress = 100;
+        log(job.changed ? '\nRepositório atualizado; o watcher processará as alterações.\n' : '\nRepositório sem alterações.\n');
+      } catch (error) {
+        item.syncStatus = 'error';
+        item.syncError = error.message;
+        job.status = 'failed';
+        job.error = error.message;
+        log(`\n${error.message}\n`);
+      } finally {
+        job.finishedAt = new Date().toISOString();
+        locks.delete(lockKey);
+        activeRepositorySyncs -= 1;
+        await persist().catch(console.error);
+        resolve(job);
+        pumpSyncQueue();
+      }
+    });
+  }
+}
+
+function enqueueRepositorySync(item, { source = 'manual', parentJobId = null, deferPump = false } = {}) {
+  const lockKey = `${item.workspaceId}/${item.id}`;
+  if (locks.has(lockKey)) throw new Error('Já existe uma operação em andamento para este recurso.');
+  locks.add(lockKey);
+  const job = addJob({
+    id: randomUUID(), type: 'sync', label: `Sincronizando ${item.fullName}`, status: 'queued', progress: 0, log: '',
+    source, parentJobId, workspaceId: item.workspaceId, repositoryId: item.id, createdAt: new Date().toISOString()
+  });
+  let resolve;
+  const completion = new Promise(done => { resolve = done; });
+  const queue = syncQueues.get(item.workspaceId) || [];
+  if (!syncQueues.has(item.workspaceId)) syncWorkspaceOrder.push(item.workspaceId);
+  queue.push({ item, job, lockKey, resolve });
+  syncQueues.set(item.workspaceId, queue);
+  item.activeJobId = job.id;
+  if (!deferPump) pumpSyncQueue();
+  return { job, completion };
+}
+
+async function runWorkspaceSync(selectedWorkspace, source = 'schedule') {
+  if (activeWorkspaceSyncs.has(selectedWorkspace.id)) throw new Error('Já existe uma sincronização do workspace em andamento.');
+  activeWorkspaceSyncs.add(selectedWorkspace.id);
+  const repositories = state.repositories.filter(item => item.workspaceId === selectedWorkspace.id);
+  const parent = addJob({
+    id: randomUUID(), type: 'workspace-sync', label: `Atualizando workspace ${selectedWorkspace.name}`, status: 'running',
+    progress: repositories.length ? 0 : 100, log: '', source, workspaceId: selectedWorkspace.id,
+    totalRepositories: repositories.length, completedRepositories: 0, createdAt: new Date().toISOString(), startedAt: new Date().toISOString()
+  });
+  const completions = [];
+  let skipped = 0;
+  for (const item of repositories) {
+    try {
+      const queued = enqueueRepositorySync(item, { source, parentJobId: parent.id, deferPump: true });
+      completions.push(queued.completion.then(job => {
+        parent.completedRepositories += 1;
+        parent.progress = Math.round(parent.completedRepositories / Math.max(1, parent.totalRepositories) * 100);
+        return job;
+      }));
+    } catch (error) {
+      skipped += 1;
+      parent.completedRepositories += 1;
+      parent.progress = Math.round(parent.completedRepositories / Math.max(1, parent.totalRepositories) * 100);
+      parent.log += `${item.fullName}: ignorado (${error.message})\n`;
+    }
+  }
+  pumpSyncQueue();
+  void (async () => {
+    const results = await Promise.all(completions);
+    const failed = results.filter(job => job.status === 'failed').length;
+    const changed = results.filter(job => job.changed).length;
+    const unchanged = results.filter(job => job.status === 'completed' && !job.changed).length;
+    parent.status = failed ? 'failed' : 'completed';
+    parent.progress = 100;
+    parent.finishedAt = new Date().toISOString();
+    parent.log += `${changed} atualizado(s), ${unchanged} sem alterações, ${failed} falha(s), ${skipped} ignorado(s).`;
+    const schedule = selectedWorkspace.updateSchedule;
+    schedule.lastRunAt = parent.finishedAt;
+    schedule.lastRunStatus = parent.status;
+    activeWorkspaceSyncs.delete(selectedWorkspace.id);
+    await persist().catch(console.error);
+  })();
+  return parent;
 }
 
 async function routeApi(request, response, url) {
@@ -465,7 +618,7 @@ async function routeApi(request, response, url) {
     return json(response, 200, { repositories });
   }
   if (url.pathname === '/api/workspaces' && request.method === 'GET') {
-    return json(response, 200, { workspaces: state.workspaces.map(item => ({ ...item, repositoryCount: state.repositories.filter(repo => repo.workspaceId === item.id).length })) });
+    return json(response, 200, { workspaces: state.workspaces.map(item => ({ ...item, updateSchedule: publicUpdateSchedule(item), repositoryCount: state.repositories.filter(repo => repo.workspaceId === item.id).length })) });
   }
   if (url.pathname === '/api/workspaces' && request.method === 'POST') {
     const input = await body(request);
@@ -473,7 +626,7 @@ async function routeApi(request, response, url) {
     const id = slugify(name);
     if (!name || !id) throw new Error('Informe um nome válido para o workspace.');
     if (state.workspaces.some(item => item.id === id)) throw new Error('Já existe um workspace com esse nome.');
-    const item = { id, name: name.slice(0, 80), description: String(input.description ?? '').trim().slice(0, 240), createdAt: new Date().toISOString() };
+    const item = { id, name: name.slice(0, 80), description: String(input.description ?? '').trim().slice(0, 240), updateSchedule: defaultUpdateSchedule(), createdAt: new Date().toISOString() };
     await mkdir(safeChild(REPOSITORIES_DIR, id), { recursive: true });
     state.workspaces.push(item);
     await persist();
@@ -484,7 +637,7 @@ async function routeApi(request, response, url) {
     const workspaceId = parts[1];
     const selectedWorkspace = workspace(workspaceId);
     if (parts.length === 2 && request.method === 'GET') {
-      return json(response, 200, { workspace: selectedWorkspace, repositories: state.repositories.filter(item => item.workspaceId === workspaceId).map(publicRepository) });
+      return json(response, 200, { workspace: { ...selectedWorkspace, updateSchedule: publicUpdateSchedule(selectedWorkspace) }, repositories: state.repositories.filter(item => item.workspaceId === workspaceId).map(publicRepository) });
     }
     if (parts.length === 2 && request.method === 'DELETE') {
       if (state.repositories.some(item => item.workspaceId === workspaceId)) throw new Error('Remova os repositórios antes de excluir o workspace.');
@@ -495,6 +648,24 @@ async function routeApi(request, response, url) {
       await rmdir(directory).catch(error => { if (error.code !== 'ENOENT') throw error; });
       await persist();
       return json(response, 200, { deleted: true });
+    }
+    if (parts[2] === 'schedule' && parts.length === 3) {
+      if (request.method === 'GET') return json(response, 200, { schedule: publicUpdateSchedule(selectedWorkspace), concurrency: REPOSITORY_SYNC_CONCURRENCY });
+      if (request.method === 'PUT') {
+        const input = await body(request);
+        const cron = parseCronExpression(input.cron).expression;
+        const timezone = validateTimezone(input.timezone);
+        const enabled = input.enabled === undefined ? selectedWorkspace.updateSchedule.enabled : input.enabled;
+        if (typeof enabled !== 'boolean') throw new Error('O estado da rotina deve ser verdadeiro ou falso.');
+        selectedWorkspace.updateSchedule = { ...selectedWorkspace.updateSchedule, cron, timezone, enabled, updatedAt: new Date().toISOString(), lastScheduledMinute: null };
+        await persist();
+        return json(response, 200, { schedule: publicUpdateSchedule(selectedWorkspace), concurrency: REPOSITORY_SYNC_CONCURRENCY });
+      }
+    }
+    if (parts[2] === 'schedule' && parts[3] === 'run' && request.method === 'POST') {
+      const job = await runWorkspaceSync(selectedWorkspace, 'manual');
+      await persist();
+      return json(response, 202, job);
     }
     if (parts[2] === 'repositories' && parts.length === 3 && request.method === 'POST') {
       const input = await body(request);
@@ -537,13 +708,9 @@ async function routeApi(request, response, url) {
         return json(response, 200, { deleted: true });
       }
       if (parts[4] === 'sync' && request.method === 'POST') {
-        const job = createJob('sync', `Sincronizando ${item.fullName}`, `${workspaceId}/${item.id}`, async (_job, log) => {
-          item.status = 'syncing';
-          await run('git', ['pull', '--ff-only'], { cwd: item.path, env: gitAuthEnvironment(githubToken), onOutput: log });
-          item.commit = (await run('git', ['rev-parse', '--short', 'HEAD'], { cwd: item.path })).stdout.trim();
-          item.status = 'ready'; item.lastSyncAt = new Date().toISOString();
-        });
-        item.activeJobId = job.id; await persist(); return json(response, 202, job);
+        const { job } = enqueueRepositorySync(item);
+        await persist();
+        return json(response, 202, job);
       }
       if (parts[4] === 'index' && request.method === 'POST') {
         const job = createJob('index', `Indexando ${item.fullName}`, `${workspaceId}/${item.id}`, async (_job, log) => {
@@ -576,6 +743,36 @@ if (CBM_PROJECT_RECONCILE) {
   await refreshRepositoryProjects({ force: true }).catch(error => console.warn('Não foi possível reconciliar os IDs MCP dos repositórios:', error.message));
   setInterval(() => refreshRepositoryProjects({ force: true }).catch(error => console.warn('Falha ao reconciliar IDs MCP:', error.message)), 300_000).unref();
 }
+
+async function checkWorkspaceSchedules(now = new Date()) {
+  const scheduledMinute = now.toISOString().slice(0, 16);
+  let changed = false;
+  for (const selectedWorkspace of state.workspaces) {
+    const schedule = selectedWorkspace.updateSchedule;
+    if (!schedule?.enabled || schedule.lastScheduledMinute === scheduledMinute) continue;
+    let matches = false;
+    try { matches = cronMatches(schedule.cron, now, schedule.timezone); }
+    catch (error) { console.warn(`Cron inválido no workspace ${selectedWorkspace.id}:`, error.message); }
+    if (!matches) continue;
+    schedule.lastScheduledMinute = scheduledMinute;
+    changed = true;
+    if (activeWorkspaceSyncs.has(selectedWorkspace.id)) {
+      schedule.lastRunAt = now.toISOString();
+      schedule.lastRunStatus = 'skipped';
+      continue;
+    }
+    try { await runWorkspaceSync(selectedWorkspace, 'schedule'); }
+    catch (error) {
+      schedule.lastRunAt = now.toISOString();
+      schedule.lastRunStatus = 'failed';
+      console.warn(`Falha ao agendar workspace ${selectedWorkspace.id}:`, error.message);
+    }
+  }
+  if (changed) await persist();
+}
+
+await checkWorkspaceSchedules().catch(error => console.warn('Falha ao verificar rotinas:', error.message));
+setInterval(() => checkWorkspaceSchedules().catch(error => console.warn('Falha ao verificar rotinas:', error.message)), 15_000).unref();
 await startMcpGuardrailServer(mcpAccess, MCP_GUARDRAIL_ADDR);
 await provisionMcpSystemToken();
 

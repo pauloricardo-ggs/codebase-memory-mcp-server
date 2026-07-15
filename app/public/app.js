@@ -64,10 +64,11 @@ async function renderWorkspaces() {
   setNavigation('workspaces');
   setHeader('Workspaces', 'Administração', '<button class="button primary" data-action="new-workspace">＋ Novo workspace</button>');
   const { workspaces } = await api('/api/workspaces');
-  content.innerHTML = workspaces.length ? `<div class="toolbar"><span class="subtle">${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'} configurado${workspaces.length === 1 ? '' : 's'}</span></div><div class="grid">${workspaces.map(item => `<article class="card workspace-card" data-workspace="${item.id}"><div class="card-head"><span class="workspace-icon">⌘</span><span class="badge">${item.repositoryCount} repo${item.repositoryCount === 1 ? '' : 's'}</span></div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || 'Sem descrição')}</p><div class="card-meta"><span>Criado em ${date(item.createdAt)}</span><span>Ver →</span></div></article>`).join('')}</div>` : `<div class="empty"><div><div class="empty-icon">⌘</div><h2>Organize seus repositórios em workspaces</h2><p>Crie um workspace para agrupar projetos relacionados e iniciar clones e indexações.</p><button class="button primary" data-action="new-workspace">Criar primeiro workspace</button></div></div>`;
+  content.innerHTML = workspaces.length ? `<div class="toolbar"><span class="subtle">${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'} configurado${workspaces.length === 1 ? '' : 's'}</span></div><div class="grid">${workspaces.map(item => `<article class="card workspace-card" data-workspace="${item.id}"><div class="card-head"><span class="workspace-icon">⌘</span><span class="badge">${item.repositoryCount} repo${item.repositoryCount === 1 ? '' : 's'}</span></div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || 'Sem descrição')}</p><div class="schedule-summary ${item.updateSchedule.enabled ? '' : 'disabled'}"><strong>${item.updateSchedule.enabled ? escapeHtml(item.updateSchedule.description) : 'Atualização automática desativada'}</strong>${item.updateSchedule.enabled && item.updateSchedule.nextRunAt ? `<small>Próxima: ${date(item.updateSchedule.nextRunAt)}</small>` : ''}</div><div class="card-meta"><span>Criado em ${date(item.createdAt)}</span><span>Ver →</span></div></article>`).join('')}</div>` : `<div class="empty"><div><div class="empty-icon">⌘</div><h2>Organize seus repositórios em workspaces</h2><p>Crie um workspace para agrupar projetos relacionados e iniciar clones e indexações.</p><button class="button primary" data-action="new-workspace">Criar primeiro workspace</button></div></div>`;
 }
 
 function repositoryRow(repo) {
+  const visibleStatus = repo.syncStatus === 'syncing' ? 'syncing' : repo.syncStatus === 'error' ? 'sync-error' : repo.status;
   return `
     <article class="repo-row">
       <div class="repo-title">
@@ -91,11 +92,11 @@ function repositoryRow(repo) {
 
       <div class="repo-status">
         <small>Status</small>
-        <span class="status ${escapeHtml(repo.status)}">${escapeHtml(repo.status)}</span>
+        <span class="status ${escapeHtml(visibleStatus)}" ${repo.syncError ? `title="${escapeHtml(repo.syncError)}"` : ''}>${escapeHtml(visibleStatus)}</span>
       </div>
 
       <div class="repo-actions">
-        ${repo.status === 'indexed' ? `<button class="button small graph-button" data-action="open-graph-ui" data-project="${escapeHtml(repo.project || '')}">Explorar ↗</button>` : ''}
+        ${repo.project ? `<button class="button small graph-button" data-action="open-graph-ui" data-project="${escapeHtml(repo.project)}">Explorar ↗</button>` : ''}
         <button class="button small" data-action="sync" data-repo="${repo.id}">Sincronizar</button>
         <button class="button small" data-action="index" data-repo="${repo.id}">Indexar</button>
         <button class="button small danger" data-action="delete-repo" data-repo="${repo.id}" data-name="${escapeHtml(repo.fullName)}">Excluir</button>
@@ -108,7 +109,14 @@ async function renderWorkspace(id) {
   setNavigation('workspaces');
   const { workspace, repositories } = await api(`/api/workspaces/${id}`);
   setHeader(workspace.name, 'Workspaces / Detalhes', '<button class="button" data-action="delete-workspace">Excluir workspace</button> <button class="button primary" data-action="add-repositories">＋ Adicionar repositórios</button>');
-  content.innerHTML = repositories.length ? `<div class="toolbar"><button class="button small" data-action="back">← Voltar</button><span class="subtle">${repositories.length} repositório${repositories.length === 1 ? '' : 's'}</span></div><div class="repo-list">${repositories.map(repositoryRow).join('')}</div>` : `<button class="button small" data-action="back">← Voltar</button><div class="empty" style="margin-top:18px"><div><div class="empty-icon">◇</div><h2>Nenhum repositório neste workspace</h2><p>Selecione repositórios disponíveis na sua conta do GitHub e eles serão clonados automaticamente.</p><button class="button primary" data-action="add-repositories">Adicionar repositórios</button></div></div>`;
+  const schedule = workspace.updateSchedule;
+  const scheduleCard = `<section class="card schedule-card"><div><div class="schedule-title"><h2>Atualização automática</h2><span class="status ${schedule.enabled ? 'active' : 'revoked'}">${schedule.enabled ? 'Ativada' : 'Desativada'}</span></div><p class="schedule-description">${escapeHtml(schedule.description)}</p><p>Executa somente <code>git pull</code>. A atualização do índice permanece sob responsabilidade do watcher.</p><div class="schedule-details"><span><small>Expressão cron</small><code>${escapeHtml(schedule.cron)}</code></span><span><small>Fuso</small><strong>${escapeHtml(schedule.timezone)}</strong></span><span><small>Próxima execução</small><strong>${date(schedule.nextRunAt)}</strong></span><span><small>Última execução</small><strong>${date(schedule.lastRunAt)}${schedule.lastRunStatus ? ` · ${escapeHtml(schedule.lastRunStatus)}` : ''}</strong></span></div></div><div class="schedule-actions"><label class="switch-control" data-action="toggle-schedule" data-enabled="${schedule.enabled}" title="${schedule.enabled ? 'Desativar rotina' : 'Ativar rotina'}"><input type="checkbox" ${schedule.enabled ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span><span>${schedule.enabled ? 'Ativada' : 'Desativada'}</span></label><div class="repo-actions"><button class="button small" data-action="run-workspace-sync">Executar agora</button><button class="button small" data-action="edit-schedule">Editar cron</button></div></div></section>`;
+  content.innerHTML = `<div class="toolbar"><button class="button small" data-action="back">← Voltar</button><span class="subtle">${repositories.length} repositório${repositories.length === 1 ? '' : 's'}</span></div>${scheduleCard}${repositories.length ? `<div class="repo-list">${repositories.map(repositoryRow).join('')}</div>` : `<div class="empty" style="margin-top:18px"><div><div class="empty-icon">◇</div><h2>Nenhum repositório neste workspace</h2><p>Selecione repositórios disponíveis na sua conta do GitHub e eles serão clonados automaticamente.</p><button class="button primary" data-action="add-repositories">Adicionar repositórios</button></div></div>`}`;
+}
+
+function editScheduleModal(schedule) {
+  const [minute, hour, day, month, weekday] = schedule.cron.split(' ');
+  openModal(`<h2 class="modal-title">Atualização automática</h2><p class="modal-copy">Configure os cinco campos do cron separadamente. Use <code>*</code> para qualquer valor, vírgula para listas e <code>*/n</code> para intervalos.</p><div class="cron-fields"><div class="field"><label for="schedule-minute">Minuto</label><input id="schedule-minute" value="${escapeHtml(minute)}" placeholder="0"><small>0–59</small></div><div class="field"><label for="schedule-hour">Hora</label><input id="schedule-hour" value="${escapeHtml(hour)}" placeholder="*"><small>0–23</small></div><div class="field"><label for="schedule-day">Dia do mês</label><input id="schedule-day" value="${escapeHtml(day)}" placeholder="*"><small>1–31</small></div><div class="field"><label for="schedule-month">Mês</label><input id="schedule-month" value="${escapeHtml(month)}" placeholder="*"><small>1–12</small></div><div class="field"><label for="schedule-weekday">Dia da semana</label><input id="schedule-weekday" value="${escapeHtml(weekday)}" placeholder="*"><small>0–7, domingo</small></div></div><div class="cron-preview"><small>Configuração atual</small><strong>${escapeHtml(schedule.description)}</strong><code>${escapeHtml(schedule.cron)}</code></div><div class="field"><label for="schedule-timezone">Fuso horário</label><input id="schedule-timezone" value="${escapeHtml(schedule.timezone)}" placeholder="America/Maceio"></div><label class="switch-control switch-modal"><input id="schedule-enabled" type="checkbox" ${schedule.enabled ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span><span>Rotina ativada</span></label><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-schedule">Salvar</button></div>`);
 }
 
 function renderJobs() {
@@ -315,6 +323,25 @@ document.addEventListener('click', async event => {
     if (target.dataset.view === 'mcp-users') return renderMcpUsers();
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
+    if (action === 'edit-schedule') {
+      const { workspace } = await api(`/api/workspaces/${currentWorkspace}`);
+      return editScheduleModal(workspace.updateSchedule);
+    }
+    if (action === 'save-schedule') {
+      target.disabled = true;
+      const cron = ['#schedule-minute','#schedule-hour','#schedule-day','#schedule-month','#schedule-weekday'].map(selector => $(selector).value.trim()).join(' ');
+      await api(`/api/workspaces/${currentWorkspace}/schedule`, { method:'PUT', body:JSON.stringify({ cron, timezone:$('#schedule-timezone').value, enabled:$('#schedule-enabled').checked }) });
+      closeModal(); toast('Rotina atualizada.'); return renderWorkspace(currentWorkspace);
+    }
+    if (action === 'toggle-schedule') {
+      const { workspace } = await api(`/api/workspaces/${currentWorkspace}`);
+      await api(`/api/workspaces/${currentWorkspace}/schedule`, { method:'PUT', body:JSON.stringify({ cron:workspace.updateSchedule.cron, timezone:workspace.updateSchedule.timezone, enabled:target.dataset.enabled !== 'true' }) });
+      toast(target.dataset.enabled === 'true' ? 'Rotina desativada.' : 'Rotina ativada.'); return renderWorkspace(currentWorkspace);
+    }
+    if (action === 'run-workspace-sync') {
+      await api(`/api/workspaces/${currentWorkspace}/schedule/run`, { method:'POST' });
+      toast('Sincronização do workspace adicionada à fila global.'); return refreshJobs();
+    }
     if (action === 'new-mcp-user') return newMcpUserModal();
     if (action === 'edit-mcp-access') {
       const user = currentMcpUsers.find(item => item.id === target.dataset.user);

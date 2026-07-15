@@ -104,7 +104,7 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   const appDataDirectory = path.join(directory, 'data');
   await mkdir(appDataDirectory, { recursive: true });
   await writeFile(path.join(appDataDirectory, 'state.json'), JSON.stringify({
-    workspaces: [{ id: 'plataforma', name: 'Plataforma', createdAt: '2026-01-01T00:00:00.000Z' }],
+    workspaces: [{ id: 'plataforma', name: 'Plataforma', updateSchedule: { enabled: false, cron: '0 * * * *', timezone: 'America/Maceio', lastRunAt: null, lastRunStatus: null }, createdAt: '2026-01-01T00:00:00.000Z' }],
     repositories: [
       {
         id: 'api',
@@ -160,6 +160,17 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   assert.equal(gatewayConfig.mcp.policies.apiKey.keys.length, 1);
   assert.equal(gatewayConfig.mcp.policies.apiKey.keys[0].metadata.userId, 'system-playground');
   assert.equal(gatewayConfig.mcp.policies.mcpGuardrails.processors[0].host, `admin:${guardrailPort}`);
+  const schedule = await request(`http://127.0.0.1:${appPort}/api/workspaces/plataforma/schedule`);
+  assert.equal(schedule.schedule.cron, '0 * * * *');
+  assert.equal(schedule.schedule.description, 'Atualiza a cada hora');
+  assert.equal(schedule.schedule.enabled, false);
+  assert.equal(schedule.concurrency, 3);
+  const updatedSchedule = await request(`http://127.0.0.1:${appPort}/api/workspaces/plataforma/schedule`, {
+    method: 'PUT',
+    body: JSON.stringify({ cron: '*/15 * * * *', timezone: 'UTC', enabled: false })
+  });
+  assert.equal(updatedSchedule.schedule.cron, '*/15 * * * *');
+  assert.equal(updatedSchedule.schedule.timezone, 'UTC');
   const system = await request(`http://127.0.0.1:${appPort}/api/mcp-system-token/reveal`, { method: 'POST' });
   assert.equal(system.token, gatewayConfig.mcp.policies.apiKey.keys[0].key);
 

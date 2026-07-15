@@ -5,6 +5,140 @@ import path from 'node:path';
 
 const MCP_USER_MANAGER = 'codebase-memory-admin';
 const MCP_GUARDRAIL_HOST = process.env.MCP_GUARDRAIL_HOST || 'admin:3001';
+export const DEFAULT_WORKSPACE_CRON = '0 * * * *';
+export const DEFAULT_TIMEZONE = 'America/Maceio';
+
+function cronField(value, minimum, maximum, label) {
+  const values = new Set();
+  const source = String(value ?? '').trim();
+  if (!source) throw new Error(`Campo ${label} do cron está vazio.`);
+  for (const part of source.split(',')) {
+    const [rangeSource, stepSource] = part.split('/');
+    if (part.split('/').length > 2) throw new Error(`Campo ${label} do cron é inválido.`);
+    const step = stepSource === undefined ? 1 : Number(stepSource);
+    if (!Number.isInteger(step) || step < 1) throw new Error(`Passo inválido no campo ${label} do cron.`);
+    let start;
+    let end;
+    if (rangeSource === '*') {
+      start = minimum;
+      end = maximum;
+    } else if (/^\d+$/.test(rangeSource)) {
+      start = Number(rangeSource);
+      end = stepSource === undefined ? start : maximum;
+    } else {
+      const match = /^(\d+)-(\d+)$/.exec(rangeSource);
+      if (!match) throw new Error(`Campo ${label} do cron é inválido.`);
+      start = Number(match[1]);
+      end = Number(match[2]);
+    }
+    if (start < minimum || end > maximum || start > end) throw new Error(`Valor fora do intervalo no campo ${label} do cron.`);
+    for (let current = start; current <= end; current += step) values.add(current === 7 && maximum === 7 ? 0 : current);
+  }
+  const expectedSize = maximum === 7 && minimum === 0 ? 7 : maximum - minimum + 1;
+  return { values, unrestricted: values.size === expectedSize };
+}
+
+export function parseCronExpression(expression) {
+  const normalized = String(expression ?? '').trim().replace(/\s+/g, ' ');
+  const parts = normalized.split(' ');
+  if (parts.length !== 5) throw new Error('Use uma expressão cron com cinco campos: minuto, hora, dia, mês e dia da semana.');
+  return {
+    expression: normalized,
+    minute: cronField(parts[0], 0, 59, 'minuto'),
+    hour: cronField(parts[1], 0, 23, 'hora'),
+    day: cronField(parts[2], 1, 31, 'dia do mês'),
+    month: cronField(parts[3], 1, 12, 'mês'),
+    weekday: cronField(parts[4], 0, 7, 'dia da semana')
+  };
+}
+
+function joinPortuguese(items) {
+  if (items.length < 2) return items[0] || '';
+  return `${items.slice(0, -1).join(', ')} e ${items.at(-1)}`;
+}
+
+function simpleCronNumbers(source, minimum, maximum) {
+  if (!/^(?:\d+)(?:,\d+)*$/.test(source)) return null;
+  const values = [...new Set(source.split(',').map(Number))].sort((a, b) => a - b);
+  return values.every(value => value >= minimum && value <= maximum) ? values : null;
+}
+
+export function describeCron(expression) {
+  const cron = parseCronExpression(expression);
+  const [minuteSource, hourSource, daySource, monthSource, weekdaySource] = cron.expression.split(' ');
+  const calendarIsDaily = daySource === '*' && monthSource === '*' && weekdaySource === '*';
+  if (cron.expression === '* * * * *') return 'Atualiza a cada minuto';
+  const minuteStep = /^\*\/(\d+)$/.exec(minuteSource);
+  if (minuteStep && hourSource === '*' && calendarIsDaily) return `Atualiza a cada ${Number(minuteStep[1])} minutos`;
+  if (hourSource === '*' && calendarIsDaily) {
+    const minutes = simpleCronNumbers(minuteSource, 0, 59);
+    if (minutes?.length === 1) return minutes[0] === 0 ? 'Atualiza a cada hora' : `Atualiza a cada hora, no minuto ${minutes[0]}`;
+  }
+  const hours = simpleCronNumbers(hourSource, 0, 23);
+  const minutes = simpleCronNumbers(minuteSource, 0, 59);
+  if (hours && minutes && hours.length * minutes.length <= 12 && monthSource === '*') {
+    const times = hours.flatMap(hour => minutes.map(minute => minute === 0 ? `${hour}h` : `${hour}h${String(minute).padStart(2, '0')}`));
+    let frequency = 'diariamente';
+    if (daySource === '*' && weekdaySource === '1-5') frequency = 'de segunda a sexta';
+    else if (!calendarIsDaily) frequency = null;
+    if (frequency) return `Atualiza ${frequency} ${joinPortuguese(times.map(time => `às ${time}`))}`;
+  }
+  return `Atualiza conforme o cron ${cron.expression}`;
+}
+
+export function validateTimezone(timezone) {
+  const value = String(timezone ?? '').trim();
+  try { new Intl.DateTimeFormat('en-US', { timeZone: value }).format(); }
+  catch { throw new Error('Fuso horário inválido. Use um identificador como America/Maceio.'); }
+  return value;
+}
+
+function zonedDateParts(date, timezone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    minute: 'numeric', hour: 'numeric', hourCycle: 'h23',
+    day: 'numeric', month: 'numeric', weekday: 'short'
+  }).formatToParts(date);
+  const value = type => parts.find(item => item.type === type)?.value;
+  return {
+    minute: Number(value('minute')),
+    hour: Number(value('hour')),
+    day: Number(value('day')),
+    month: Number(value('month')),
+    weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(value('weekday'))
+  };
+}
+
+export function cronMatches(expression, date, timezone) {
+  const cron = typeof expression === 'string' ? parseCronExpression(expression) : expression;
+  const zone = validateTimezone(timezone);
+  const local = zonedDateParts(date, zone);
+  const dayMatches = cron.day.values.has(local.day);
+  const weekdayMatches = cron.weekday.values.has(local.weekday);
+  const calendarMatches = cron.day.unrestricted && cron.weekday.unrestricted
+    ? true
+    : cron.day.unrestricted ? weekdayMatches
+      : cron.weekday.unrestricted ? dayMatches
+        : dayMatches || weekdayMatches;
+  return cron.minute.values.has(local.minute)
+    && cron.hour.values.has(local.hour)
+    && cron.month.values.has(local.month)
+    && calendarMatches;
+}
+
+export function nextCronOccurrence(expression, timezone, after = new Date()) {
+  const cron = parseCronExpression(expression);
+  const zone = validateTimezone(timezone);
+  const cursor = new Date(after);
+  cursor.setUTCSeconds(0, 0);
+  cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
+  const limit = 366 * 24 * 60;
+  for (let index = 0; index < limit; index += 1) {
+    if (cronMatches(cron, cursor, zone)) return new Date(cursor);
+    cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
+  }
+  throw new Error('O cron não possui uma próxima execução no período de um ano.');
+}
 
 export function slugify(value) {
   return String(value ?? '')
