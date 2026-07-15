@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafeSegment, gitAuthEnvironment, loadCredentials, safeChild, saveCredentials, slugify } from '../src/lib.js';
+import { assertSafeSegment, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, safeChild, saveCredentials, slugify } from '../src/lib.js';
 
 test('slugify normaliza nomes de workspaces', () => {
   assert.equal(slugify('Pagamentos & Cobrança'), 'pagamentos-cobranca');
@@ -25,6 +25,12 @@ test('autenticação Git usa Basic sem expor o token no argumento do clone', () 
   assert.equal(environment.GIT_TERMINAL_PROMPT, '0');
   const encoded = environment.GIT_CONFIG_VALUE_0.replace('Authorization: Basic ', '');
   assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), 'x-access-token:github_pat_example');
+});
+
+test('indexação usa flags em vez do JSON depreciado', () => {
+  assert.deepEqual(indexRepositoryArguments('/data/repositories/time/api'), [
+    'cli', 'index_repository', '--repo-path', '/data/repositories/time/api'
+  ]);
 });
 
 test('credencial do GitHub persiste com permissão restrita', async t => {

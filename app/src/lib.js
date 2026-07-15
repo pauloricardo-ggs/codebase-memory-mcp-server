@@ -35,6 +35,10 @@ export function gitAuthEnvironment(token) {
   };
 }
 
+export function indexRepositoryArguments(repositoryPath) {
+  return ['cli', 'index_repository', '--repo-path', repositoryPath];
+}
+
 export async function loadState(file) {
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8'));

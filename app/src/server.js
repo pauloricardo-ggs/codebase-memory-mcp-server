@@ -4,7 +4,7 @@ import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeSegment, gitAuthEnvironment, loadCredentials, loadState, run, safeChild, saveCredentials, saveState, slugify } from './lib.js';
+import { assertSafeSegment, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadState, run, safeChild, saveCredentials, saveState, slugify } from './lib.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -256,8 +256,7 @@ async function routeApi(request, response, url) {
       if (parts[4] === 'index' && request.method === 'POST') {
         const job = createJob('index', `Indexando ${item.fullName}`, `${workspaceId}/${item.id}`, async (_job, log) => {
           item.status = 'indexing';
-          const payload = JSON.stringify({ repo_path: item.path });
-          await run(CBM_BIN, ['cli', 'index_repository', payload], { onOutput: log });
+          await run(CBM_BIN, indexRepositoryArguments(item.path), { onOutput: log });
           item.status = 'indexed'; item.lastIndexedAt = new Date().toISOString();
         });
         item.activeJobId = job.id; await persist(); return json(response, 202, job);
