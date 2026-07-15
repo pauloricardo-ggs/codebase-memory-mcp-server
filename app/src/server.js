@@ -4,7 +4,7 @@ import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeSegment, loadState, run, safeChild, saveState, slugify } from './lib.js';
+import { assertSafeSegment, gitAuthEnvironment, loadState, run, safeChild, saveState, slugify } from './lib.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -74,8 +74,13 @@ async function github(endpoint, token = githubToken) {
       'x-github-api-version': '2022-11-28'
     }
   });
-  if (!response.ok) throw new Error(response.status === 401 ? 'Token do GitHub inválido.' : `GitHub respondeu com HTTP ${response.status}.`);
-  return response.json();
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) throw new Error('Token do GitHub inválido ou expirado.');
+    if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') throw new Error('O limite de requisições do GitHub foi atingido. Tente novamente mais tarde.');
+    throw new Error(payload.message ? `GitHub: ${payload.message}` : `GitHub respondeu com HTTP ${response.status}.`);
+  }
+  return payload;
 }
 
 async function listGithubRepositories() {
@@ -133,16 +138,6 @@ function createJob(type, label, lockKey, operation) {
     }
   });
   return job;
-}
-
-function gitEnvironment() {
-  if (!githubToken) return {};
-  return {
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-    GIT_CONFIG_VALUE_0: `Authorization: Bearer ${githubToken}`,
-    GIT_TERMINAL_PROMPT: '0'
-  };
 }
 
 async function routeApi(request, response, url) {
@@ -210,6 +205,13 @@ async function routeApi(request, response, url) {
       const available = await listGithubRepositories();
       const selected = input.repositories.map(fullName => available.find(item => item.fullName === fullName));
       if (selected.some(item => !item)) throw new Error('Um dos repositórios selecionados não está disponível.');
+      const requestedIds = new Map();
+      for (const remote of selected) {
+        const repositoryId = slugify(remote.name);
+        const collision = requestedIds.get(repositoryId) || state.repositories.find(item => item.workspaceId === workspaceId && item.id === repositoryId && item.fullName !== remote.fullName)?.fullName;
+        if (collision) throw new Error(`Os repositórios ${collision} e ${remote.fullName} usam o mesmo nome de pasta. Adicione-os em workspaces diferentes.`);
+        requestedIds.set(repositoryId, remote.fullName);
+      }
       const created = [];
       for (const remote of selected) {
         const id = slugify(remote.name);
@@ -218,7 +220,7 @@ async function routeApi(request, response, url) {
         const item = { id, workspaceId, name: remote.name, fullName: remote.fullName, description: remote.description, private: remote.private, language: remote.language, defaultBranch: remote.defaultBranch, status: 'cloning', path: target, createdAt: new Date().toISOString() };
         state.repositories.push(item);
         const job = createJob('clone', `Clonando ${remote.fullName}`, `${workspaceId}/${id}`, async (currentJob, log) => {
-          await run('git', ['clone', '--filter=blob:none', remote.cloneUrl, target], { env: gitEnvironment(), onOutput: log });
+          await run('git', ['clone', remote.cloneUrl, target], { env: gitAuthEnvironment(githubToken), onOutput: log });
           const commit = (await run('git', ['rev-parse', '--short', 'HEAD'], { cwd: target })).stdout.trim();
           item.status = 'ready'; item.commit = commit; item.lastSyncAt = new Date().toISOString(); currentJob.progress = 100;
         });
@@ -240,7 +242,7 @@ async function routeApi(request, response, url) {
       if (parts[4] === 'sync' && request.method === 'POST') {
         const job = createJob('sync', `Sincronizando ${item.fullName}`, `${workspaceId}/${item.id}`, async (_job, log) => {
           item.status = 'syncing';
-          await run('git', ['pull', '--ff-only'], { cwd: item.path, env: gitEnvironment(), onOutput: log });
+          await run('git', ['pull', '--ff-only'], { cwd: item.path, env: gitAuthEnvironment(githubToken), onOutput: log });
           item.commit = (await run('git', ['rev-parse', '--short', 'HEAD'], { cwd: item.path })).stdout.trim();
           item.status = 'ready'; item.lastSyncAt = new Date().toISOString();
         });

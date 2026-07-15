@@ -24,6 +24,17 @@ export function safeChild(root, ...segments) {
   return result;
 }
 
+export function gitAuthEnvironment(token) {
+  if (!token) return { GIT_TERMINAL_PROMPT: '0' };
+  const credentials = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${credentials}`,
+    GIT_TERMINAL_PROMPT: '0'
+  };
+}
+
 export async function loadState(file) {
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8'));

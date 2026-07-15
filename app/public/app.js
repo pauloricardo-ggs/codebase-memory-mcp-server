@@ -5,6 +5,7 @@ const modal = $('#modal');
 let currentView = 'workspaces';
 let currentWorkspace = null;
 let jobs = [];
+let selectedRepositories = new Set();
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
 const date = value => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle:'short', timeStyle:'short' }).format(new Date(value)) : '—';
@@ -63,13 +64,46 @@ async function repositoryPicker() {
   if (!connection.connected) { connectGithubModal(); return; }
   openModal('<h2 class="modal-title">Adicionar repositórios</h2><p class="modal-copy">Carregando repositórios disponíveis…</p><div class="loading"><i></i> Consultando GitHub</div>');
   try {
-    const { repositories } = await api('/api/github/repositories');
-    $('#modal-content').innerHTML = `<h2 class="modal-title">Adicionar repositórios</h2><p class="modal-copy">Selecione um ou mais repositórios. Arquivados aparecem na lista, mas ficam desabilitados.</p><input class="search" id="repo-search" placeholder="Buscar por nome ou descrição…"><div class="picker" id="repo-picker">${repositoryRows(repositories)}</div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="clone-selected">Adicionar selecionados</button></div>`;
-    $('#repo-search').addEventListener('input', event => { $('#repo-picker').innerHTML = repositoryRows(repositories.filter(repo => `${repo.fullName} ${repo.description || ''}`.toLowerCase().includes(event.target.value.toLowerCase()))); });
+    const [{ repositories }, workspaceData] = await Promise.all([
+      api('/api/github/repositories'),
+      api(`/api/workspaces/${currentWorkspace}`)
+    ]);
+    const existing = new Set(workspaceData.repositories.map(repo => repo.fullName));
+    selectedRepositories = new Set();
+    $('#modal-content').innerHTML = `<h2 class="modal-title">Adicionar repositórios</h2><p class="modal-copy">Selecione um ou mais repositórios. Os já adicionados e os arquivados ficam desabilitados.</p><input class="search" id="repo-search" placeholder="Buscar por nome ou descrição…"><div class="picker-summary"><span id="repository-results">${repositories.length} encontrados</span><strong id="repository-selection">0 selecionados</strong></div><div class="picker" id="repo-picker">${repositoryRows(repositories, existing)}</div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="clone-selected" disabled>Adicionar selecionados</button></div>`;
+    const redraw = query => {
+      const normalizedQuery = normalizeSearch(query);
+      const filtered = repositories.filter(repo => normalizeSearch(`${repo.fullName} ${repo.description || ''}`).includes(normalizedQuery));
+      $('#repo-picker').innerHTML = repositoryRows(filtered, existing);
+      $('#repository-results').textContent = `${filtered.length} encontrado${filtered.length === 1 ? '' : 's'}`;
+      updateRepositorySelection();
+    };
+    $('#repo-search').addEventListener('input', event => redraw(event.target.value));
+    $('#repo-picker').addEventListener('change', event => {
+      if (!event.target.matches('input[name=repository]')) return;
+      if (event.target.checked) selectedRepositories.add(event.target.value);
+      else selectedRepositories.delete(event.target.value);
+      updateRepositorySelection();
+    });
   } catch (error) { closeModal(); toast(error.message, 'error'); }
 }
 
-function repositoryRows(repositories) { return repositories.map(repo => `<label class="picker-row"><input type="checkbox" name="repository" value="${escapeHtml(repo.fullName)}" ${repo.archived ? 'disabled' : ''}><span><strong>${escapeHtml(repo.fullName)}</strong><small>${escapeHtml(repo.description || 'Sem descrição')}</small></span><span class="badge">${repo.private ? 'privado' : 'público'}</span></label>`).join('') || '<div class="empty" style="min-height:120px">Nenhum repositório encontrado.</div>'; }
+function normalizeSearch(value) { return String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim(); }
+
+function repositoryRows(repositories, existing = new Set()) {
+  return repositories.map(repo => {
+    const unavailable = repo.archived || existing.has(repo.fullName);
+    const checked = selectedRepositories.has(repo.fullName) && !unavailable;
+    const label = existing.has(repo.fullName) ? 'adicionado' : repo.archived ? 'arquivado' : repo.private ? 'privado' : 'público';
+    return `<label class="picker-row ${unavailable ? 'disabled' : ''}"><input type="checkbox" name="repository" value="${escapeHtml(repo.fullName)}" ${checked ? 'checked' : ''} ${unavailable ? 'disabled' : ''}><span><strong>${escapeHtml(repo.fullName)}</strong><small>${escapeHtml(repo.description || 'Sem descrição')}</small></span><span class="badge">${label}</span></label>`;
+  }).join('') || '<div class="empty" style="min-height:120px">Nenhum repositório encontrado.</div>';
+}
+
+function updateRepositorySelection() {
+  const count = selectedRepositories.size;
+  $('#repository-selection').textContent = `${count} selecionado${count === 1 ? '' : 's'}`;
+  $('[data-action="clone-selected"]').disabled = count === 0;
+}
 
 async function refreshJobs() {
   try {
@@ -95,7 +129,7 @@ document.addEventListener('click', async event => {
     if (action === 'save-github') { target.disabled = true; await api('/api/github/connection', { method:'POST', body:JSON.stringify({ token:$('#github-token').value }) }); closeModal(); await renderGithub(); return toast('GitHub conectado.'); }
     if (action === 'save-workspace') { target.disabled = true; await api('/api/workspaces', { method:'POST', body:JSON.stringify({ name:$('#workspace-name').value, description:$('#workspace-description').value }) }); closeModal(); toast('Workspace criado.'); return renderWorkspaces(); }
     if (action === 'add-repositories') return repositoryPicker();
-    if (action === 'clone-selected') { const selected = $$('input[name=repository]:checked').map(input => input.value); if (!selected.length) throw new Error('Selecione pelo menos um repositório.'); target.disabled = true; await api(`/api/workspaces/${currentWorkspace}/repositories`, { method:'POST', body:JSON.stringify({ repositories:selected }) }); closeModal(); toast('Clonagem iniciada.'); await refreshJobs(); return renderWorkspace(currentWorkspace); }
+    if (action === 'clone-selected') { const selected = [...selectedRepositories]; if (!selected.length) throw new Error('Selecione pelo menos um repositório.'); target.disabled = true; await api(`/api/workspaces/${currentWorkspace}/repositories`, { method:'POST', body:JSON.stringify({ repositories:selected }) }); selectedRepositories.clear(); closeModal(); toast('Clonagem iniciada.'); await refreshJobs(); return renderWorkspace(currentWorkspace); }
     if (action === 'sync' || action === 'index') { await api(`/api/workspaces/${currentWorkspace}/repositories/${target.dataset.repo}/${action}`, { method:'POST' }); toast(action === 'sync' ? 'Sincronização iniciada.' : 'Indexação iniciada.'); return refreshJobs(); }
     if (action === 'delete-repo') { if (!confirm(`Excluir ${target.dataset.name}? O clone local será removido.`)) return; await api(`/api/workspaces/${currentWorkspace}/repositories/${target.dataset.repo}`, { method:'DELETE' }); toast('Repositório removido.'); return renderWorkspace(currentWorkspace); }
     if (action === 'delete-workspace') { if (!confirm('Excluir este workspace vazio?')) return; await api(`/api/workspaces/${currentWorkspace}`, { method:'DELETE' }); toast('Workspace removido.'); return renderWorkspaces(); }
