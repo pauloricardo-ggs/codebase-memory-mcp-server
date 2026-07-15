@@ -52,6 +52,24 @@ export async function saveState(file, state) {
   await rename(temporary, file);
 }
 
+export async function loadCredentials(file) {
+  try {
+    const credentials = JSON.parse(await readFile(file, 'utf8'));
+    if (typeof credentials.token !== 'string' || !credentials.token || !credentials.user?.login) return null;
+    return credentials;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+export async function saveCredentials(file, credentials) {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(credentials)}\n`, { mode: 0o600 });
+  await rename(temporary, file);
+}
+
 export function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {

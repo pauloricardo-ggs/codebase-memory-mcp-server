@@ -11,6 +11,7 @@ ENV_FILE="${BASE_DIR}/.env"
 CBM_BIN="${HOME}/.local/bin/codebase-memory-mcp"
 INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
 CURRENT_USER="$(id -un)"
+SUDO_KEEPALIVE_PID=''
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
@@ -32,6 +33,14 @@ on_error() {
   printf "\n${COLOR_RED}✖  A instalação falhou na linha %s.${COLOR_RESET}\n" "$1" >&2
 }
 trap 'on_error "$LINENO"' ERR
+
+cleanup() {
+  if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
+    kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 run_step() {
   local message="$1"
@@ -97,15 +106,25 @@ validate_sudo() {
   success "Acesso ao sudo validado"
 }
 
+keep_sudo_alive() {
+  (
+    while true; do
+      sudo -n true 2>/dev/null || true
+      sleep 45
+    done
+  ) &
+  SUDO_KEEPALIVE_PID=$!
+}
+
 install_dependencies() {
   run_step "Atualizando a lista de pacotes" sudo apt-get update
-  run_step "Instalando dependências do sistema" sudo apt-get install -y ca-certificates curl git jq openssh-client util-linux docker.io
+  run_step "Instalando dependências do sistema" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y ca-certificates curl git jq openssh-client util-linux docker.io
 
   if ! docker compose version >/dev/null 2>&1 && ! sudo docker compose version >/dev/null 2>&1; then
     if apt-cache show docker-compose-v2 >/dev/null 2>&1; then
-      run_step "Instalando Docker Compose" sudo apt-get install -y docker-compose-v2
+      run_step "Instalando Docker Compose" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y docker-compose-v2
     else
-      run_step "Instalando Docker Compose" sudo apt-get install -y docker-compose-plugin
+      run_step "Instalando Docker Compose" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y docker-compose-plugin
     fi
   fi
 
@@ -241,9 +260,13 @@ show_summary() {
 main() {
   printf "\n${COLOR_BOLD}Codebase Memory MCP Server — instalação${COLOR_RESET}\n\n"
   require_supported_system
-  validate_sudo
-  install_dependencies
+  printf "${COLOR_BOLD}Configuração inicial${COLOR_RESET}\n"
+  info "Responda agora às perguntas necessárias. Depois disso, a instalação seguirá sem interrupções."
   ask_memory_budget
+  validate_sudo
+  keep_sudo_alive
+  success "Configuração concluída; iniciando instalação não interativa"
+  install_dependencies
   create_local_structure
   create_environment_file
   install_codebase_memory

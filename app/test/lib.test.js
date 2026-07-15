@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertSafeSegment, gitAuthEnvironment, safeChild, slugify } from '../src/lib.js';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { assertSafeSegment, gitAuthEnvironment, loadCredentials, safeChild, saveCredentials, slugify } from '../src/lib.js';
 
 test('slugify normaliza nomes de workspaces', () => {
   assert.equal(slugify('Pagamentos & Cobrança'), 'pagamentos-cobranca');
@@ -22,4 +25,19 @@ test('autenticação Git usa Basic sem expor o token no argumento do clone', () 
   assert.equal(environment.GIT_TERMINAL_PROMPT, '0');
   const encoded = environment.GIT_CONFIG_VALUE_0.replace('Authorization: Basic ', '');
   assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), 'x-access-token:github_pat_example');
+});
+
+test('credencial do GitHub persiste com permissão restrita', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'cbm-credentials-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'secrets', 'github-credentials.json');
+  const credentials = { token: 'github_pat_example', user: { login: 'octocat' } };
+
+  await saveCredentials(file, credentials);
+
+  assert.deepEqual(await loadCredentials(file), credentials);
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(path.dirname(file))).mode & 0o777, 0o700);
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+  }
 });

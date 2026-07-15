@@ -5,7 +5,7 @@ Painel administrativo para organizar workspaces, clonar repositórios do GitHub 
 ## Funcionalidades
 
 - criação e exclusão segura de workspaces;
-- conexão temporária com GitHub por token fine-grained;
+- conexão persistente com GitHub por token fine-grained;
 - listagem alfabética e busca de repositórios acessíveis;
 - seleção múltipla e clone automático no workspace correto;
 - sincronização por `git pull --ff-only`;
@@ -14,7 +14,7 @@ Painel administrativo para organizar workspaces, clonar repositórios do GitHub 
 - persistência local dos workspaces e repositórios;
 - interface responsiva acessível somente pelo host local.
 
-O token do GitHub permanece apenas na memória do painel. Ele não é salvo no `.env`, no banco local, na URL do clone nem nos logs. Após reiniciar o container, é necessário conectar o GitHub novamente.
+O token do GitHub é validado antes de ser salvo em `data/secrets/github-credentials.json`. O diretório recebe permissão `700` e o arquivo `600`; ambos ficam fora do Git. O token não é salvo no `.env`, na URL do clone ou nos logs e permanece disponível depois de rebuilds, reinicializações e novas execuções do instalador.
 
 ## Pré-requisitos
 
@@ -44,6 +44,8 @@ Durante a instalação, escolha o orçamento de memória:
 - outro valor inteiro informado em MB.
 
 As opções em GB são convertidas usando `1 GB = 1024 MB`, conforme o formato de `CBM_MEM_BUDGET_MB`.
+
+Todas as interações acontecem no início: primeiro a seleção de memória e depois, se necessário, a senha do `sudo`. A credencial do `sudo` é mantida ativa durante a execução e a instalação de pacotes usa modo não interativo, evitando que o processo pare aguardando uma resposta depois de iniciar as etapas demoradas.
 
 Ao final, abra:
 
@@ -183,7 +185,7 @@ docker compose config
 Esta primeira versão é um painel administrativo de host único:
 
 - escuta somente em `127.0.0.1`;
-- não persiste o token do GitHub;
+- persiste o token somente em `data/secrets/`, com acesso restrito ao usuário da instalação;
 - valida identificadores e mantém caminhos dentro da raiz permitida;
 - não utiliza shell para construir comandos Git ou Codebase Memory;
 - executa o container com UID/GID não privilegiados;

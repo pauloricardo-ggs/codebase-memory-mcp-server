@@ -56,7 +56,7 @@ function newWorkspaceModal() {
 }
 
 function connectGithubModal() {
-  openModal(`<h2 class="modal-title">Conectar ao GitHub</h2><p class="modal-copy">Use um token fine-grained com acesso de leitura a metadados e conteúdos. O token permanece apenas na memória e será descartado ao reiniciar ou desconectar.</p><div class="field"><label for="github-token">Personal access token</label><input id="github-token" type="password" autocomplete="off" placeholder="github_pat_…"></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-github">Conectar</button></div>`);
+  openModal(`<h2 class="modal-title">Conectar ao GitHub</h2><p class="modal-copy">Use um token fine-grained com acesso de leitura a metadados e conteúdos. Ele será armazenado localmente, com acesso restrito, e preservado ao reiniciar ou atualizar o painel.</p><div class="field"><label for="github-token">Personal access token</label><input id="github-token" type="password" autocomplete="off" placeholder="github_pat_…"></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-github">Conectar e salvar</button></div>`);
 }
 
 async function repositoryPicker() {

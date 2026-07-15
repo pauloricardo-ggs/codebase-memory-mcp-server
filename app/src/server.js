@@ -4,24 +4,26 @@ import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeSegment, gitAuthEnvironment, loadState, run, safeChild, saveState, slugify } from './lib.js';
+import { assertSafeSegment, gitAuthEnvironment, loadCredentials, loadState, run, safeChild, saveCredentials, saveState, slugify } from './lib.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.APP_DATA_DIR || '/data/app';
 const REPOSITORIES_DIR = process.env.CBM_ALLOWED_ROOT || '/data/repositories';
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const GITHUB_CREDENTIALS_FILE = path.join(DATA_DIR, 'secrets', 'github-credentials.json');
 const CBM_BIN = process.env.CBM_BIN || 'codebase-memory-mcp';
 const PORT = Number(process.env.PORT || 3000);
 
+await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
+
 let state = await loadState(STATE_FILE);
-let githubToken = '';
-let githubUser = null;
+const storedGithubCredentials = await loadCredentials(GITHUB_CREDENTIALS_FILE);
+let githubToken = storedGithubCredentials?.token ?? '';
+let githubUser = storedGithubCredentials?.user ?? null;
 let githubCache = { at: 0, repositories: [] };
 const jobs = [];
 const locks = new Set();
-
-await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
 function json(response, status, payload) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -152,12 +154,15 @@ async function routeApi(request, response, url) {
       const input = await body(request);
       const token = String(input.token ?? '').trim();
       const user = await github('/user', token);
+      const persistedUser = { login: user.login, name: user.name, avatarUrl: user.avatar_url };
+      await saveCredentials(GITHUB_CREDENTIALS_FILE, { token, user: persistedUser });
       githubToken = token;
-      githubUser = { login: user.login, name: user.name, avatarUrl: user.avatar_url };
+      githubUser = persistedUser;
       githubCache = { at: 0, repositories: [] };
       return json(response, 200, { connected: true, user: githubUser });
     }
     if (request.method === 'DELETE') {
+      await rm(GITHUB_CREDENTIALS_FILE, { force: true });
       githubToken = ''; githubUser = null; githubCache = { at: 0, repositories: [] };
       return json(response, 200, { connected: false });
     }
