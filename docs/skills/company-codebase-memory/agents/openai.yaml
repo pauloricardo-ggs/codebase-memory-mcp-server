@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Codebase Memory"
+  short_description: "Investigue código com o MCP corporativo"
+  default_prompt: "Use $company-codebase-memory para investigar o fluxo e o impacto desta alteração no código."

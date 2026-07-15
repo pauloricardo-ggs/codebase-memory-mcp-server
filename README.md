@@ -70,6 +70,9 @@ O endpoint MCP remoto fica disponível na rede local em:
 http://<IP-ou-dominio>:8787/mcp
 ```
 
+`8787` é apenas o valor padrão. Quando `UI_PORT` for alterado no `.env`, os
+clientes devem usar `http://<IP-ou-dominio>:<UI_PORT>/mcp`.
+
 O primeiro boot gera uma credencial técnica em modo `strict` antes de o proxy
 publicar o endpoint. Portanto, `/mcp` nunca fica acessível na rede local sem uma
 API key válida. O token técnico é usado pela validação da instalação e pode ser
@@ -78,6 +81,69 @@ copiado no menu **Usuários MCP** para uso no Playground.
 Os containers `admin` e `agentgateway` não publicam portas diretamente no host.
 Somente o container `proxy` publica `8787` e `8788`; as portas internas `3000`
 e `15000` não podem ser acessadas diretamente.
+
+## Configuração do MCP nos agentes
+
+Cada desenvolvedor deve receber uma API key individual pelo menu **Usuários
+MCP**. Guarde o token somente na máquina do desenvolvedor.
+
+Não grave o token no Git, na skill, no `AGENTS.md` nem diretamente em um arquivo
+de configuração versionado.
+
+### Codex
+
+Adicione ao arquivo de usuário `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.codebase_memory]
+url = "http://192.168.64.3:8787/mcp"
+bearer_token_env_var = "CODEBASE_MEMORY_MCP_TOKEN"
+required = true
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+```
+
+Substitua `192.168.64.3` pelo IP do servidor e `8787` pelo valor de `UI_PORT`.
+`bearer_token_env_var` faz o cliente enviar o token como `Authorization: Bearer`
+sem persistir o segredo no TOML. Com `required = true`, o Codex informa a falha
+já na inicialização quando o servidor não está acessível; use `false` se o agente
+também precisar funcionar fora da rede local sem o MCP.
+
+Em outros clientes compatíveis com Streamable HTTP, configure a mesma URL e o
+cabeçalho:
+
+```text
+Authorization: Bearer <token-individual>
+```
+
+Prefira sempre o mecanismo do cliente que lê o valor de uma variável de ambiente
+ou cofre de segredos. A sintaxe de interpolação varia entre clientes e não deve
+ser presumida como compatível.
+
+Depois de reiniciar o agente, valide a conexão pedindo que ele execute
+`list_projects`. Para uma API key individual, o guardrail filtra a resposta e
+retorna somente os projetos autorizados para aquele usuário. A credencial
+**Sistema / Playground** continua vendo todos os projetos.
+
+### Skill corporativa
+
+A skill completa para investigar arquitetura, fluxos, dependências, bugs e
+impacto de alterações está em
+[`docs/skills/company-codebase-memory/`](docs/skills/company-codebase-memory/).
+Ela também orienta o agente a selecionar o ID técnico retornado por
+`list_projects`, verificar a cobertura do índice, confirmar conclusões no código
+local e tratar corretamente erros de autenticação e autorização.
+
+Para instalá-la globalmente no Codex a partir deste clone:
+
+```bash
+mkdir -p ~/.agents/skills/company-codebase-memory
+cp -R docs/skills/company-codebase-memory/. ~/.agents/skills/company-codebase-memory/
+```
+
+Reinicie o Codex após instalar ou atualizar a skill. Ela pode ser acionada
+explicitamente com `$company-codebase-memory` e também possui uma descrição
+abrangente para uso automático em investigações de código.
 
 ## Primeiro uso
 
