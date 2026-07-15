@@ -69,10 +69,10 @@ O endpoint MCP remoto fica disponível na rede local em:
 http://<IP-ou-dominio>:8787/mcp
 ```
 
-O primeiro boot não cria API keys nem ativa a validação, permitindo testar o
-Playground da interface. O endpoint MCP fica temporariamente acessível para
-quem alcança a rede local. Ao cadastrar a primeira chave individual, ative a
-política `apiKey` em modo `strict`.
+O primeiro boot gera uma credencial técnica em modo `strict` antes de o proxy
+publicar o endpoint. Portanto, `/mcp` nunca fica acessível na rede local sem uma
+API key válida. O token técnico é usado pela validação da instalação e pode ser
+copiado no menu **Usuários MCP** para uso no Playground.
 
 Os containers `admin` e `agentgateway` não publicam portas diretamente no host.
 Somente o container `proxy` publica `8787` e `8788`; as portas internas `3000`
@@ -145,15 +145,18 @@ anunciada pelo AgentGateway no Playground. `AGENTGATEWAY_UI_PORT` controla a
 porta pública da interface administrativa do gateway.
 
 Antes de cada inicialização, o serviço one-shot `agentgateway-config` sincroniza
-o valor numérico de `UI_PORT` em `data/agentgateway/config.yaml`. Isso é
-necessário porque o runtime do AgentGateway expande variáveis de ambiente, mas
-o Playground lê o YAML persistido diretamente. As demais alterações feitas
-pela Admin UI são preservadas.
+o valor numérico de `UI_PORT` em `data/agentgateway/config.yaml` e, no primeiro
+boot, gera a credencial técnica protegida. Isso é necessário porque o runtime
+do AgentGateway expande variáveis de ambiente, mas o Playground lê o YAML
+persistido diretamente. As demais alterações feitas pela Admin UI são
+preservadas.
 
-Na migração, uma política `apiKey` em modo `strict` com `keys: []` é removida,
-pois ela impediria o uso inicial do
-Playground sem oferecer uma credencial válida. Políticas que contenham chaves
-são preservadas.
+O bootstrap cria ou recupera `data/secrets/mcp-system-token` antes de iniciar o
+AgentGateway. Em upgrades, o backend administrativo também reconcilia essa
+credencial com `apiKey.mode: strict` antes de ficar saudável. Como o Nginx
+depende dessa verificação de saúde, o MCP só é publicado depois que a proteção
+estiver aplicada. A política `strict` também é preservada se não houver outras
+chaves.
 
 O serviço one-shot `agentgateway-ready` aguarda o listener MCP aceitar conexões
 antes de liberar a inicialização do Nginx. Isso evita respostas `502` durante a
@@ -166,10 +169,9 @@ definição do serviço não mudou, mesmo que o arquivo persistido tenha recebid
 uma nova porta.
 
 Durante a instalação, o sistema também confirma que `/api/config` anuncia
-`UI_PORT` e executa uma chamada MCP `initialize` completa através do Nginx. A
-instalação falha com os logs do gateway caso qualquer uma dessas verificações
-não passe. Uma resposta `401` é considerada saudável quando a autenticação já
-estiver configurada, pois comprova que o endpoint foi alcançado e protegido.
+`UI_PORT`, verifica que uma chamada sem token recebe `401` e executa um
+`initialize` completo com a credencial técnica através do Nginx. A instalação
+falha com os logs do gateway caso qualquer uma dessas verificações não passe.
 
 Para conferir manualmente a porta que o Playground está lendo:
 
@@ -190,6 +192,38 @@ Os logs relevantes ficam disponíveis com:
 ```bash
 docker compose logs --tail=200 agentgateway-config agentgateway proxy
 ```
+
+## Usuários e tokens MCP
+
+O menu **Usuários MCP** do painel administrativo gerencia chaves individuais
+sem exigir edição manual do YAML. O modo `strict` já começa ativo com uma chave
+**Sistema / Playground**. Tokens individuais são exibidos apenas no momento da
+criação, rotação ou reativação e devem ser enviados no cliente como:
+
+```text
+Authorization: Bearer cbm_mcp_...
+```
+
+O painel permite revogar, rotacionar, reativar e excluir usuários. Revogar ou
+rotacionar remove imediatamente a chave anterior da lista aceita pelo gateway.
+Chaves adicionadas manualmente à configuração são preservadas, pois o painel
+altera somente entradas marcadas com `managedBy: codebase-memory-admin`.
+
+O token **Sistema / Playground** pode ser revelado ou rotacionado por um
+administrador. Para usar a UI oficial, abra **MCP → Tool Playground**, expanda
+**Authorization header** e cole o valor em **Bearer token**. O AgentGateway
+1.3.1 não carrega automaticamente chaves MCP configuradas no YAML; o painel não
+injeta o segredo no navegador para evitar transformar a UI em um bypass de
+autenticação.
+
+Os dados administrativos ficam em
+`data/secrets/mcp-users.json`, com permissão `0600`, contendo apenas o prefixo e
+o hash de cada token individual. A credencial técnica fica em
+`data/secrets/mcp-system-token`, também com permissão `0600`. O valor completo
+de cada chave aceita ainda precisa existir em
+`data/agentgateway/config.yaml`, pois o AgentGateway 1.3.1 valida API keys por
+comparação direta. A configuração e esses diretórios devem permanecer
+acessíveis somente ao usuário da instalação.
 
 `LOCAL_UID` e `LOCAL_GID` fazem o container gravar arquivos com o mesmo proprietário do usuário que executou a instalação.
 
@@ -243,6 +277,8 @@ O acesso ao painel possui as seguintes proteções:
 - headers contra framing, MIME sniffing e vazamento de referrer;
 - `.htpasswd` armazenado em `data/secrets/proxy/`;
 - token do GitHub armazenado separadamente em `data/secrets/`, com acesso restrito;
+- cadastro MCP armazena somente prefixo e hash dos tokens fora da configuração do gateway;
+- token técnico do MCP armazenado em `data/secrets/mcp-system-token` com permissão restrita;
 - identificadores e caminhos são mantidos dentro da raiz permitida;
 - comandos Git e Codebase Memory não são construídos por interpolação de shell;
 - containers executam com o UID/GID não privilegiado da instalação.

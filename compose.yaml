@@ -9,6 +9,7 @@ services:
       UI_PORT: "${UI_PORT:-8787}"
     volumes:
       - ./data/agentgateway:/config
+      - ./data/secrets:/secrets
       - ./agentgateway/config.yaml:/bootstrap/config.yaml:ro
       - ./agentgateway/configure.sh:/usr/local/bin/configure-agentgateway:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/configure-agentgateway"]
@@ -54,6 +55,9 @@ services:
     user: "${LOCAL_UID}:${LOCAL_GID}"
     init: true
     restart: unless-stopped
+    depends_on:
+      agentgateway:
+        condition: service_started
     environment:
       PORT: "3000"
       APP_DATA_DIR: /data/app
@@ -63,6 +67,7 @@ services:
       CBM_BIN: /usr/local/bin/codebase-memory-mcp
       UI_PORT: "${UI_PORT:-8787}"
       AGENTGATEWAY_UI_PORT: "${AGENTGATEWAY_UI_PORT:-8788}"
+      AGENTGATEWAY_ADMIN_URL: http://agentgateway:15000
     volumes:
       - ./data:/data/app
       - ./repositories:/data/repositories

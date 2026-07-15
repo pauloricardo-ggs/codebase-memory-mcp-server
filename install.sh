@@ -362,33 +362,47 @@ validate_agentgateway_command() {
   fi
 
   docker_compose exec -T admin node --input-type=module -e '
+    const { readFile } = await import("node:fs/promises");
+    const systemToken = (await readFile("/data/app/secrets/mcp-system-token", "utf8")).trim();
+    if (!systemToken) throw new Error("Token MCP do sistema não foi criado.");
     let lastError;
     for (let attempt = 1; attempt <= 30; attempt += 1) {
       try {
-        const response = await fetch("http://proxy:8080/mcp", {
+        const initializeBody = JSON.stringify({
+          jsonrpc: "2.0",
+          id: attempt,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "install-check", version: "1.0" }
+          }
+        });
+        const unauthenticated = await fetch("http://proxy:8080/mcp", {
           method: "POST",
           headers: {
             accept: "application/json, text/event-stream",
             "content-type": "application/json"
           },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: attempt,
-            method: "initialize",
-            params: {
-              protocolVersion: "2025-03-26",
-              capabilities: {},
-              clientInfo: { name: "install-check", version: "1.0" }
-            }
-          }),
+          body: initializeBody,
+          signal: AbortSignal.timeout(5000)
+        });
+        if (unauthenticated.status !== 401) {
+          const body = await unauthenticated.text();
+          throw new Error(`MCP aceitou chamada sem token: HTTP ${unauthenticated.status} ${body}`);
+        }
+        const response = await fetch("http://proxy:8080/mcp", {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+            authorization: `Bearer ${systemToken}`
+          },
+          body: initializeBody,
           signal: AbortSignal.timeout(5000)
         });
         const body = await response.text();
         if (response.ok && body.includes("\"result\"")) process.exit(0);
-        if (response.status === 401) {
-          console.log("MCP alcançável e protegido por autenticação.");
-          process.exit(0);
-        }
         lastError = new Error(`HTTP ${response.status} ${body}`);
       } catch (error) {
         lastError = error;

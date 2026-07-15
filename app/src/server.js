@@ -4,7 +4,7 @@ import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertSafeSegment, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadState, parseLastJsonLine, run, safeChild, saveCredentials, saveState, slugify } from './lib.js';
+import { assertSafeSegment, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify } from './lib.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -12,20 +12,31 @@ const DATA_DIR = process.env.APP_DATA_DIR || '/data/app';
 const REPOSITORIES_DIR = process.env.CBM_ALLOWED_ROOT || '/data/repositories';
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const GITHUB_CREDENTIALS_FILE = path.join(DATA_DIR, 'secrets', 'github-credentials.json');
+const MCP_USERS_FILE = path.join(DATA_DIR, 'secrets', 'mcp-users.json');
+const MCP_SYSTEM_TOKEN_FILE = path.join(DATA_DIR, 'secrets', 'mcp-system-token');
 const CBM_BIN = process.env.CBM_BIN || 'codebase-memory-mcp';
 const PORT = Number(process.env.PORT || 3000);
 const UI_PORT = Number(process.env.UI_PORT);
 const AGENTGATEWAY_UI_PORT = Number(process.env.AGENTGATEWAY_UI_PORT);
+const AGENTGATEWAY_ADMIN_URL = String(process.env.AGENTGATEWAY_ADMIN_URL || 'http://agentgateway:15000').replace(/\/+$/, '');
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
 let state = await loadState(STATE_FILE);
+let mcpUserStore = await loadMcpUserStore(MCP_USERS_FILE);
+let mcpSystemToken = await loadSecret(MCP_SYSTEM_TOKEN_FILE);
 const storedGithubCredentials = await loadCredentials(GITHUB_CREDENTIALS_FILE);
 let githubToken = storedGithubCredentials?.token ?? '';
 let githubUser = storedGithubCredentials?.user ?? null;
 let githubCache = { at: 0, repositories: [] };
 const jobs = [];
 const locks = new Set();
+let mcpUserMutation = false;
+const MCP_SYSTEM_USER = {
+  id: 'system-playground',
+  name: 'Sistema / Playground',
+  identity: 'system@local'
+};
 
 function json(response, status, payload) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -63,6 +74,126 @@ function repository(workspaceId, repositoryId) {
 }
 
 async function persist() { await saveState(STATE_FILE, state); }
+
+function mcpUser(id) {
+  assertSafeSegment(id, 'Usuário MCP');
+  const found = mcpUserStore.users.find(item => item.id === id);
+  if (!found) throw new Error('Usuário MCP não encontrado.');
+  return found;
+}
+
+function mcpUserInput(input) {
+  const name = String(input.name ?? '').trim().slice(0, 100);
+  const identity = String(input.identity ?? '').trim().slice(0, 160);
+  const description = String(input.description ?? '').trim().slice(0, 240);
+  if (!name) throw new Error('Informe o nome do usuário MCP.');
+  if (!identity) throw new Error('Informe o e-mail ou login do usuário MCP.');
+  return { name, identity, description };
+}
+
+async function agentGatewayConfig(config) {
+  const response = await fetch(`${AGENTGATEWAY_ADMIN_URL}/api/config`, config === undefined ? {
+    signal: AbortSignal.timeout(5000)
+  } : {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(config),
+    signal: AbortSignal.timeout(10_000)
+  });
+  const raw = await response.text();
+  if (!response.ok) {
+    let detail = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      detail = typeof parsed === 'string' ? parsed : parsed.error || parsed.message || JSON.stringify(parsed);
+    } catch { /* use response text */ }
+    throw new Error(`AgentGateway recusou a configuração: ${detail || `HTTP ${response.status}`}`);
+  }
+  if (config !== undefined) return;
+  try { return JSON.parse(raw); } catch { throw new Error('O AgentGateway retornou uma configuração inválida.'); }
+}
+
+async function commitMcpUserChange(nextStore, changeGatewayConfig) {
+  if (mcpUserMutation) throw new Error('Outra alteração de usuários MCP está em andamento. Tente novamente.');
+  mcpUserMutation = true;
+  let previousConfig;
+  try {
+    previousConfig = await agentGatewayConfig();
+    const nextConfig = structuredClone(previousConfig);
+    changeGatewayConfig(nextConfig);
+    await agentGatewayConfig(nextConfig);
+    try {
+      await saveMcpUserStore(MCP_USERS_FILE, nextStore);
+    } catch (error) {
+      await agentGatewayConfig(previousConfig).catch(rollbackError => console.error('Falha ao restaurar configuração do AgentGateway:', rollbackError));
+      throw error;
+    }
+    mcpUserStore = nextStore;
+  } finally {
+    mcpUserMutation = false;
+  }
+}
+
+async function provisionMcpSystemToken() {
+  if (!mcpSystemToken) {
+    mcpSystemToken = generateMcpToken();
+    await saveSecret(MCP_SYSTEM_TOKEN_FILE, mcpSystemToken);
+  }
+  let lastError;
+  for (let attempt = 1; attempt <= 60; attempt += 1) {
+    try {
+      const previousConfig = await agentGatewayConfig();
+      const nextConfig = structuredClone(previousConfig);
+      setMcpGatewayUserKey(nextConfig, MCP_SYSTEM_USER, mcpSystemToken);
+      if (JSON.stringify(nextConfig) !== JSON.stringify(previousConfig)) await agentGatewayConfig(nextConfig);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  throw new Error(`Não foi possível proteger o MCP com o token do sistema: ${lastError?.message}`);
+}
+
+async function rotateMcpSystemToken() {
+  if (mcpUserMutation) throw new Error('Outra alteração de usuários MCP está em andamento. Tente novamente.');
+  mcpUserMutation = true;
+  const nextToken = generateMcpToken();
+  let previousConfig;
+  try {
+    previousConfig = await agentGatewayConfig();
+    const nextConfig = structuredClone(previousConfig);
+    setMcpGatewayUserKey(nextConfig, MCP_SYSTEM_USER, nextToken);
+    await agentGatewayConfig(nextConfig);
+    try {
+      await saveSecret(MCP_SYSTEM_TOKEN_FILE, nextToken);
+    } catch (error) {
+      await agentGatewayConfig(previousConfig).catch(rollbackError => console.error('Falha ao restaurar configuração do AgentGateway:', rollbackError));
+      throw error;
+    }
+    mcpSystemToken = nextToken;
+    return nextToken;
+  } finally {
+    mcpUserMutation = false;
+  }
+}
+
+function issueMcpToken(user) {
+  const token = generateMcpToken();
+  const now = new Date().toISOString();
+  return {
+    token,
+    user: {
+      ...user,
+      status: 'active',
+      keyPrefix: `${token.slice(0, 16)}…`,
+      tokenHash: mcpTokenFingerprint(token),
+      tokenCreatedAt: now,
+      updatedAt: now,
+      revokedAt: null
+    }
+  };
+}
 
 function publicRepository(item) {
   return { ...item, path: undefined };
@@ -152,6 +283,57 @@ async function routeApi(request, response, url) {
   }
   if (request.method === 'GET' && url.pathname === '/api/config') {
     return json(response, 200, { uiPort: UI_PORT, agentgatewayUiPort: AGENTGATEWAY_UI_PORT });
+  }
+  if (url.pathname === '/api/mcp-system-token/reveal' && request.method === 'POST') {
+    return json(response, 200, { token: mcpSystemToken, name: MCP_SYSTEM_USER.name });
+  }
+  if (url.pathname === '/api/mcp-system-token/rotate' && request.method === 'POST') {
+    const token = await rotateMcpSystemToken();
+    return json(response, 200, { token, name: MCP_SYSTEM_USER.name });
+  }
+  if (url.pathname === '/api/mcp-users') {
+    if (request.method === 'GET') {
+      return json(response, 200, {
+        users: mcpUserStore.users.map(publicMcpUser),
+        accessMode: 'strict',
+        systemAccess: true
+      });
+    }
+    if (request.method === 'POST') {
+      const input = mcpUserInput(await body(request));
+      if (mcpUserStore.users.some(item => item.identity.toLowerCase() === input.identity.toLowerCase())) {
+        throw new Error('Já existe um usuário MCP com esse e-mail ou login.');
+      }
+      const now = new Date().toISOString();
+      const issued = issueMcpToken({ id: randomUUID(), ...input, createdAt: now });
+      const nextStore = { managed: true, users: [...mcpUserStore.users, issued.user] };
+      await commitMcpUserChange(nextStore, config => setMcpGatewayUserKey(config, issued.user, issued.token));
+      return json(response, 201, { user: publicMcpUser(issued.user), token: issued.token });
+    }
+  }
+  if (parts[0] === 'mcp-users' && parts[1]) {
+    const selected = mcpUser(parts[1]);
+    if (parts.length === 2 && request.method === 'DELETE') {
+      const nextStore = { managed: true, users: mcpUserStore.users.filter(item => item.id !== selected.id) };
+      await commitMcpUserChange(nextStore, config => removeMcpGatewayUserKey(config, selected.id));
+      return json(response, 200, { deleted: true });
+    }
+    if (parts.length === 3 && parts[2] === 'revoke' && request.method === 'POST') {
+      if (selected.status === 'revoked') throw new Error('O token deste usuário já está revogado.');
+      const now = new Date().toISOString();
+      const updated = { ...selected, status: 'revoked', updatedAt: now, revokedAt: now };
+      const nextStore = { managed: true, users: mcpUserStore.users.map(item => item.id === selected.id ? updated : item) };
+      await commitMcpUserChange(nextStore, config => removeMcpGatewayUserKey(config, selected.id));
+      return json(response, 200, { user: publicMcpUser(updated) });
+    }
+    if (parts.length === 3 && (parts[2] === 'rotate' || parts[2] === 'reactivate') && request.method === 'POST') {
+      if (parts[2] === 'rotate' && selected.status !== 'active') throw new Error('Reative o usuário antes de rotacionar seu token.');
+      if (parts[2] === 'reactivate' && selected.status !== 'revoked') throw new Error('Este usuário já está ativo.');
+      const issued = issueMcpToken(selected);
+      const nextStore = { managed: true, users: mcpUserStore.users.map(item => item.id === selected.id ? issued.user : item) };
+      await commitMcpUserChange(nextStore, config => setMcpGatewayUserKey(config, issued.user, issued.token));
+      return json(response, 200, { user: publicMcpUser(issued.user), token: issued.token });
+    }
   }
   if (url.pathname === '/api/github/connection') {
     if (request.method === 'GET') return json(response, 200, { connected: Boolean(githubToken), user: githubUser });
@@ -284,6 +466,8 @@ function serveStatic(response, pathname) {
     createReadStream(file).pipe(response);
   }).catch(() => { response.writeHead(404); response.end('Not found'); });
 }
+
+await provisionMcpSystemToken();
 
 http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);

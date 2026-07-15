@@ -6,6 +6,7 @@ CONFIG_DIR="${CONFIG_DIR:-/config}"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 TEMPLATE_FILE="${TEMPLATE_FILE:-/bootstrap/config.yaml}"
 TEMP_FILE="${CONFIG_DIR}/config.yaml.tmp"
+SYSTEM_TOKEN_FILE="${SYSTEM_TOKEN_FILE:-/secrets/mcp-system-token}"
 
 case "${UI_PORT:-}" in
   ''|*[!0-9]*)
@@ -21,43 +22,38 @@ fi
 
 mkdir -p "$CONFIG_DIR"
 
+umask 077
+mkdir -p "$(dirname "$SYSTEM_TOKEN_FILE")"
+if [ ! -s "$SYSTEM_TOKEN_FILE" ]; then
+  SYSTEM_TOKEN="cbm_mcp_$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  printf '%s\n' "$SYSTEM_TOKEN" >"${SYSTEM_TOKEN_FILE}.tmp"
+  chmod 600 "${SYSTEM_TOKEN_FILE}.tmp"
+  mv "${SYSTEM_TOKEN_FILE}.tmp" "$SYSTEM_TOKEN_FILE"
+else
+  SYSTEM_TOKEN="$(tr -d '\r\n' <"$SYSTEM_TOKEN_FILE")"
+fi
+
+case "$SYSTEM_TOKEN" in
+  cbm_mcp_*) SYSTEM_TOKEN_VALUE="${SYSTEM_TOKEN#cbm_mcp_}" ;;
+  *) SYSTEM_TOKEN_VALUE='' ;;
+esac
+case "$SYSTEM_TOKEN_VALUE" in
+  ''|*[!A-Za-z0-9_-]*)
+    echo "Token MCP do sistema possui formato inválido." >&2
+    exit 1
+    ;;
+esac
+
 if [ ! -f "$CONFIG_FILE" ]; then
-  sed "s/__UI_PORT__/${UI_PORT}/g" "$TEMPLATE_FILE" >"$TEMP_FILE"
+  sed -e "s/__UI_PORT__/${UI_PORT}/g" -e "s/__MCP_SYSTEM_TOKEN__/${SYSTEM_TOKEN}/g" "$TEMPLATE_FILE" >"$TEMP_FILE"
 else
   awk -v port="$UI_PORT" '
-    function reset_api_key_block() {
-      in_api_key = 0
-      api_key_text = ""
-      api_key_strict = 0
-      api_key_empty = 0
-    }
-    function flush_api_key_block() {
-      # Remove somente a política bootstrap antiga, sem chaves nem opções
-      # adicionais. Políticas configuradas pelo usuário são preservadas.
-      if (!(api_key_strict && api_key_empty)) {
-        printf "%s", api_key_text
-      }
-      reset_api_key_block()
-    }
     BEGIN {
       in_mcp = 0
       updated = 0
-      reset_api_key_block()
     }
     {
       line = $0
-    }
-    in_api_key {
-      if (line ~ /^      / || line ~ /^[[:space:]]*$/) {
-        api_key_text = api_key_text line ORS
-        if (line ~ /^      mode:[[:space:]]*strict[[:space:]]*$/) {
-          api_key_strict = 1
-        } else if (line ~ /^      keys:[[:space:]]*\[\][[:space:]]*$/) {
-          api_key_empty = 1
-        }
-        next
-      }
-      flush_api_key_block()
     }
     line ~ /^mcp:[[:space:]]*$/ {
       in_mcp = 1
@@ -68,11 +64,6 @@ else
       if (!updated) print "  port: " port
       in_mcp = 0
     }
-    in_mcp && line ~ /^    apiKey:[[:space:]]*$/ {
-      in_api_key = 1
-      api_key_text = line ORS
-      next
-    }
     in_mcp && line ~ /^  port:[[:space:]]*/ {
       print "  port: " port
       updated = 1
@@ -80,7 +71,6 @@ else
     }
     { print line }
     END {
-      if (in_api_key) flush_api_key_block()
       if (in_mcp && !updated) print "  port: " port
     }
   ' "$CONFIG_FILE" >"$TEMP_FILE"

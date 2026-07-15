@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+
+const MCP_USER_MANAGER = 'codebase-memory-admin';
 
 export function slugify(value) {
   return String(value ?? '')
@@ -80,6 +83,94 @@ export async function saveCredentials(file, credentials) {
   const temporary = `${file}.tmp`;
   await writeFile(temporary, `${JSON.stringify(credentials)}\n`, { mode: 0o600 });
   await rename(temporary, file);
+}
+
+export function generateMcpToken() {
+  return `cbm_mcp_${randomBytes(32).toString('base64url')}`;
+}
+
+export function mcpTokenFingerprint(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+export function publicMcpUser(user) {
+  const visible = {};
+  for (const key of ['id', 'name', 'identity', 'description', 'status', 'keyPrefix', 'createdAt', 'updatedAt', 'tokenCreatedAt', 'revokedAt']) {
+    if (Object.hasOwn(user, key)) visible[key] = user[key];
+  }
+  return visible;
+}
+
+export async function loadMcpUserStore(file) {
+  try {
+    const parsed = JSON.parse(await readFile(file, 'utf8'));
+    return {
+      managed: parsed.managed === true,
+      users: Array.isArray(parsed.users) ? parsed.users : []
+    };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { managed: false, users: [] };
+    throw error;
+  }
+}
+
+export async function saveMcpUserStore(file, store) {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, file);
+}
+
+export async function loadSecret(file) {
+  try {
+    const value = (await readFile(file, 'utf8')).trim();
+    return value || null;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+export async function saveSecret(file, value) {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.tmp`;
+  await writeFile(temporary, `${value}\n`, { mode: 0o600 });
+  await rename(temporary, file);
+}
+
+function ensureMcpApiKeyPolicy(config) {
+  config.mcp ??= {};
+  config.mcp.policies ??= {};
+  config.mcp.policies.apiKey ??= { keys: [] };
+  const policy = config.mcp.policies.apiKey;
+  if (!Array.isArray(policy.keys)) throw new Error('A política apiKey do AgentGateway possui um formato inválido.');
+  policy.mode = 'strict';
+  return policy;
+}
+
+function isManagedMcpKey(entry, userId) {
+  return entry?.metadata?.managedBy === MCP_USER_MANAGER && entry.metadata.userId === userId;
+}
+
+export function setMcpGatewayUserKey(config, user, token) {
+  const policy = ensureMcpApiKeyPolicy(config);
+  policy.keys = policy.keys.filter(entry => !isManagedMcpKey(entry, user.id));
+  policy.keys.push({
+    key: token,
+    metadata: {
+      managedBy: MCP_USER_MANAGER,
+      userId: user.id,
+      user: user.name,
+      identity: user.identity
+    }
+  });
+  return config;
+}
+
+export function removeMcpGatewayUserKey(config, userId) {
+  const policy = ensureMcpApiKeyPolicy(config);
+  policy.keys = policy.keys.filter(entry => !isManagedMcpKey(entry, userId));
+  return config;
 }
 
 export function run(command, args, options = {}) {

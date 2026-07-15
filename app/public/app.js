@@ -7,6 +7,7 @@ let currentWorkspace = null;
 let jobs = [];
 let selectedRepositories = new Set();
 let publicConfig = {};
+let latestMcpToken = '';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
 const date = value => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle:'short', timeStyle:'short' }).format(new Date(value)) : '—';
@@ -26,6 +27,12 @@ function toast(message, type = '') {
 function openModal(html) { $('#modal-content').innerHTML = html; modal.showModal(); }
 function closeModal() { modal.close(); }
 function setHeader(title, breadcrumb = 'Administração', actions = '') { $('#page-title').textContent = title; $('#breadcrumb').textContent = breadcrumb; $('#header-actions').innerHTML = actions; }
+function setNavigation(view) { $$('[data-view]').forEach(item => item.classList.toggle('active', item.dataset.view === view)); }
+modal.addEventListener('close', () => {
+  if (modal.open) return;
+  latestMcpToken = '';
+  $('#modal-content').replaceChildren();
+});
 
 function graphUrl(project = '') {
   const url = new URL('/', location.origin);
@@ -53,6 +60,7 @@ async function renderGithub() {
 
 async function renderWorkspaces() {
   currentView = 'workspaces'; currentWorkspace = null;
+  setNavigation('workspaces');
   setHeader('Workspaces', 'Administração', '<button class="button primary" data-action="new-workspace">＋ Novo workspace</button>');
   const { workspaces } = await api('/api/workspaces');
   content.innerHTML = workspaces.length ? `<div class="toolbar"><span class="subtle">${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'} configurado${workspaces.length === 1 ? '' : 's'}</span></div><div class="grid">${workspaces.map(item => `<article class="card workspace-card" data-workspace="${item.id}"><div class="card-head"><span class="workspace-icon">⌘</span><span class="badge">${item.repositoryCount} repo${item.repositoryCount === 1 ? '' : 's'}</span></div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || 'Sem descrição')}</p><div class="card-meta"><span>Criado em ${date(item.createdAt)}</span><span>Ver →</span></div></article>`).join('')}</div>` : `<div class="empty"><div><div class="empty-icon">⌘</div><h2>Organize seus repositórios em workspaces</h2><p>Crie um workspace para agrupar projetos relacionados e iniciar clones e indexações.</p><button class="button primary" data-action="new-workspace">Criar primeiro workspace</button></div></div>`;
@@ -95,6 +103,7 @@ function repositoryRow(repo) {
 
 async function renderWorkspace(id) {
   currentView = 'workspace'; currentWorkspace = id;
+  setNavigation('workspaces');
   const { workspace, repositories } = await api(`/api/workspaces/${id}`);
   setHeader(workspace.name, 'Workspaces / Detalhes', '<button class="button" data-action="delete-workspace">Excluir workspace</button> <button class="button primary" data-action="add-repositories">＋ Adicionar repositórios</button>');
   content.innerHTML = repositories.length ? `<div class="toolbar"><button class="button small" data-action="back">← Voltar</button><span class="subtle">${repositories.length} repositório${repositories.length === 1 ? '' : 's'}</span></div><div class="repo-list">${repositories.map(repositoryRow).join('')}</div>` : `<button class="button small" data-action="back">← Voltar</button><div class="empty" style="margin-top:18px"><div><div class="empty-icon">◇</div><h2>Nenhum repositório neste workspace</h2><p>Selecione repositórios disponíveis na sua conta do GitHub e eles serão clonados automaticamente.</p><button class="button primary" data-action="add-repositories">Adicionar repositórios</button></div></div>`;
@@ -102,8 +111,63 @@ async function renderWorkspace(id) {
 
 function renderJobs() {
   currentView = 'jobs'; currentWorkspace = null;
+  setNavigation('jobs');
   setHeader('Operações', 'Administração');
   content.innerHTML = jobs.length ? jobs.map(job => `<article class="card job"><div class="job-top"><div><h3>${escapeHtml(job.label)}</h3><span class="status ${job.status}">${job.status}</span></div><time>${date(job.createdAt)}</time></div>${job.log ? `<pre>${escapeHtml(job.log)}</pre>` : ''}${job.error ? `<p style="color:var(--danger)">${escapeHtml(job.error)}</p>` : ''}<div class="progress ${['queued','running'].includes(job.status) ? 'indeterminate' : ''}"><i style="width:${job.progress}%"></i></div></article>`).join('') : '<div class="empty"><div><div class="empty-icon">↻</div><h2>Nenhuma operação recente</h2><p>Clones, sincronizações e indexações aparecerão aqui.</p></div></div>';
+}
+
+function mcpUserRow(user) {
+  const active = user.status === 'active';
+  return `<article class="mcp-user-row">
+    <div class="mcp-user-identity">
+      <span class="user-avatar">${escapeHtml(user.name.slice(0, 2).toUpperCase())}</span>
+      <div><strong>${escapeHtml(user.name)}</strong><small>${escapeHtml(user.identity)}</small>${user.description ? `<p>${escapeHtml(user.description)}</p>` : ''}</div>
+    </div>
+    <div class="mcp-key-reference"><small>Token</small><code>${escapeHtml(user.keyPrefix || 'sem token')}</code></div>
+    <div class="mcp-user-status"><small>Status</small><span class="status ${active ? 'active' : 'revoked'}">${active ? 'Ativo' : 'Revogado'}</span></div>
+    <div class="mcp-user-dates"><small>${active ? 'Token gerado' : 'Revogado em'}</small><span>${date(active ? user.tokenCreatedAt : user.revokedAt)}</span></div>
+    <div class="repo-actions">
+      ${active
+        ? `<button class="button small" data-action="rotate-mcp-token" data-user="${user.id}" data-name="${escapeHtml(user.name)}">Gerar novo token</button><button class="button small danger" data-action="revoke-mcp-token" data-user="${user.id}" data-name="${escapeHtml(user.name)}">Revogar</button>`
+        : `<button class="button small primary" data-action="reactivate-mcp-user" data-user="${user.id}" data-name="${escapeHtml(user.name)}">Reativar</button>`}
+      <button class="button small danger" data-action="delete-mcp-user" data-user="${user.id}" data-name="${escapeHtml(user.name)}">Excluir</button>
+    </div>
+  </article>`;
+}
+
+async function renderMcpUsers() {
+  currentView = 'mcp-users'; currentWorkspace = null;
+  setNavigation('mcp-users');
+  setHeader('Usuários MCP', 'Administração / Acesso MCP', '<button class="button primary" data-action="new-mcp-user">＋ Novo usuário</button>');
+  const { users, accessMode, systemAccess } = await api('/api/mcp-users');
+  const activeCount = users.filter(user => user.status === 'active').length;
+  const totalActive = activeCount + (systemAccess ? 1 : 0);
+  const modeCopy = `${totalActive} token${totalActive === 1 ? '' : 's'} ativo${totalActive === 1 ? '' : 's'}, incluindo a credencial técnica. Requisições sem uma chave válida são bloqueadas.`;
+  content.innerHTML = `<div class="access-banner ${accessMode}"><div><strong>${accessMode === 'strict' ? 'Autenticação obrigatória' : 'Acesso inicial sem token'}</strong><p>${modeCopy}</p></div><code>${escapeHtml(new URL('/mcp', location.origin).toString())}</code></div>
+    <article class="mcp-system-card"><div><span class="user-avatar">SYS</span><div><strong>Sistema / Playground</strong><p>Credencial técnica criada automaticamente para validações da instalação e uso manual no MCP Playground.</p></div></div><div class="repo-actions"><button class="button small" data-action="reveal-system-token">Exibir token</button><button class="button small danger" data-action="rotate-system-token">Gerar novo token</button></div></article>
+    ${users.length
+      ? `<div class="toolbar"><span class="subtle">${users.length} usuário${users.length === 1 ? '' : 's'} · ${activeCount} ativo${activeCount === 1 ? '' : 's'}</span></div><div class="mcp-user-list">${users.map(mcpUserRow).join('')}</div>`
+      : `<div class="empty"><div><div class="empty-icon">♙</div><h2>Nenhum desenvolvedor cadastrado</h2><p>O endpoint já está protegido pela credencial técnica. Crie tokens individuais para os desenvolvedores que utilizarão o MCP.</p><button class="button primary" data-action="new-mcp-user">Criar primeiro usuário</button></div></div>`}`;
+}
+
+function newMcpUserModal() {
+  openModal(`<h2 class="modal-title">Novo usuário MCP</h2><p class="modal-copy">Um token individual será gerado e exibido uma única vez após o cadastro.</p><div class="field"><label for="mcp-user-name">Nome</label><input id="mcp-user-name" maxlength="100" autofocus placeholder="Ex.: Maria Silva"></div><div class="field"><label for="mcp-user-identity">E-mail ou login</label><input id="mcp-user-identity" maxlength="160" placeholder="maria@empresa.com"></div><div class="field"><label for="mcp-user-description">Descrição</label><textarea id="mcp-user-description" maxlength="240" placeholder="Time ou finalidade do acesso"></textarea></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-user">Criar e gerar token</button></div>`);
+}
+
+function mcpTokenModal(name, token) {
+  latestMcpToken = token;
+  openModal(`<h2 class="modal-title">Token de ${escapeHtml(name)}</h2><p class="modal-copy token-warning">Copie este token agora. Por segurança, ele não será exibido novamente pelo painel.</p><div class="token-box"><code>${escapeHtml(token)}</code><button class="button small" type="button" data-action="copy-mcp-token">Copiar token</button></div><div class="client-example"><small>Cabeçalho de autenticação</small><code>Authorization: Bearer ${escapeHtml(token)}</code></div><div class="modal-actions"><button class="button primary" value="cancel">Concluir</button></div>`);
+}
+
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(value); return; } catch { /* HTTP em IP local pode bloquear a Clipboard API */ }
+  }
+  const input = document.createElement('textarea');
+  input.value = value; input.style.position = 'fixed'; input.style.opacity = '0';
+  document.body.append(input); input.select();
+  const copied = document.execCommand('copy'); input.remove();
+  if (!copied) throw new Error('Não foi possível copiar automaticamente. Selecione o token manualmente.');
 }
 
 function newWorkspaceModal() {
@@ -176,8 +240,41 @@ document.addEventListener('click', async event => {
   try {
     if (target.dataset.view === 'workspaces') return renderWorkspaces();
     if (target.dataset.view === 'jobs') return renderJobs();
+    if (target.dataset.view === 'mcp-users') return renderMcpUsers();
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
+    if (action === 'new-mcp-user') return newMcpUserModal();
+    if (action === 'save-mcp-user') {
+      target.disabled = true;
+      const result = await api('/api/mcp-users', { method:'POST', body:JSON.stringify({ name:$('#mcp-user-name').value, identity:$('#mcp-user-identity').value, description:$('#mcp-user-description').value }) });
+      closeModal(); await renderMcpUsers(); mcpTokenModal(result.user.name, result.token); return;
+    }
+    if (action === 'copy-mcp-token') { await copyText(latestMcpToken); return toast('Token copiado.'); }
+    if (action === 'reveal-system-token') {
+      const result = await api('/api/mcp-system-token/reveal', { method:'POST' }); mcpTokenModal(result.name, result.token); return;
+    }
+    if (action === 'rotate-system-token') {
+      if (!confirm('Gerar um novo token técnico? Testes ou Playgrounds que estejam usando o token atual deixarão de funcionar imediatamente.')) return;
+      const result = await api('/api/mcp-system-token/rotate', { method:'POST' }); mcpTokenModal(result.name, result.token); return;
+    }
+    if (action === 'rotate-mcp-token') {
+      if (!confirm(`Gerar um novo token para ${target.dataset.name}? O token atual deixará de funcionar imediatamente.`)) return;
+      const result = await api(`/api/mcp-users/${target.dataset.user}/rotate`, { method:'POST' });
+      await renderMcpUsers(); mcpTokenModal(result.user.name, result.token); return;
+    }
+    if (action === 'revoke-mcp-token') {
+      if (!confirm(`Revogar o acesso de ${target.dataset.name}? O token atual deixará de funcionar imediatamente.`)) return;
+      await api(`/api/mcp-users/${target.dataset.user}/revoke`, { method:'POST' }); toast('Token revogado.'); return renderMcpUsers();
+    }
+    if (action === 'reactivate-mcp-user') {
+      if (!confirm(`Reativar ${target.dataset.name} e gerar um novo token?`)) return;
+      const result = await api(`/api/mcp-users/${target.dataset.user}/reactivate`, { method:'POST' });
+      await renderMcpUsers(); mcpTokenModal(result.user.name, result.token); return;
+    }
+    if (action === 'delete-mcp-user') {
+      if (!confirm(`Excluir ${target.dataset.name}? Qualquer token ativo será revogado e o cadastro será removido.`)) return;
+      await api(`/api/mcp-users/${target.dataset.user}`, { method:'DELETE' }); toast('Usuário MCP excluído.'); return renderMcpUsers();
+    }
     if (action === 'open-graph-ui') { window.open(graphUrl(target.dataset.project || ''), '_blank', 'noopener,noreferrer'); return; }
     if (action === 'open-mcp-panel') { window.open(mcpPanelUrl(), '_blank', 'noopener,noreferrer'); return; }
     if (action === 'back') return renderWorkspaces();

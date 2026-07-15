@@ -4,10 +4,19 @@ config:
   adminAddr: 0.0.0.0:15000
 
 mcp:
-  # configure.sh substitui este marcador pelo UI_PORT numérico antes do boot.
-  # A Admin UI lê o YAML sem expandir variáveis, por isso não use $UI_PORT aqui.
+  # configure.sh substitui os marcadores de porta e token antes do boot.
+  # A Admin UI lê o YAML sem expandir variáveis de ambiente.
   port: __UI_PORT__
   policies:
+    apiKey:
+      mode: strict
+      keys:
+        - key: __MCP_SYSTEM_TOKEN__
+          metadata:
+            managedBy: codebase-memory-admin
+            userId: system-playground
+            user: Sistema / Playground
+            identity: system@local
     cors:
       allowOrigins: ["*"]
       allowHeaders: ["*"]
