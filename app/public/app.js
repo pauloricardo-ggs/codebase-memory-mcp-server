@@ -6,8 +6,10 @@ let currentView = 'workspaces';
 let currentWorkspace = null;
 let jobs = [];
 let selectedRepositories = new Set();
+let selectedMcpRepositories = new Set();
+let mcpAccessOptions = [];
+let currentMcpUsers = [];
 let publicConfig = {};
-let latestMcpToken = '';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
 const date = value => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle:'short', timeStyle:'short' }).format(new Date(value)) : '—';
@@ -30,7 +32,6 @@ function setHeader(title, breadcrumb = 'Administração', actions = '') { $('#pa
 function setNavigation(view) { $$('[data-view]').forEach(item => item.classList.toggle('active', item.dataset.view === view)); }
 modal.addEventListener('close', () => {
   if (modal.open) return;
-  latestMcpToken = '';
   $('#modal-content').replaceChildren();
 });
 
@@ -118,15 +119,18 @@ function renderJobs() {
 
 function mcpUserRow(user) {
   const active = user.status === 'active';
+  const repositoryCount = user.repositoryIds?.length || 0;
   return `<article class="mcp-user-row">
     <div class="mcp-user-identity">
       <span class="user-avatar">${escapeHtml(user.name.slice(0, 2).toUpperCase())}</span>
       <div><strong>${escapeHtml(user.name)}</strong><small>${escapeHtml(user.identity)}</small>${user.description ? `<p>${escapeHtml(user.description)}</p>` : ''}</div>
     </div>
+    <div class="mcp-user-access"><small>Repositórios</small><strong>${repositoryCount}</strong><span>permitido${repositoryCount === 1 ? '' : 's'}</span></div>
     <div class="mcp-key-reference"><small>Token</small><code>${escapeHtml(user.keyPrefix || 'sem token')}</code></div>
     <div class="mcp-user-status"><small>Status</small><span class="status ${active ? 'active' : 'revoked'}">${active ? 'Ativo' : 'Revogado'}</span></div>
     <div class="mcp-user-dates"><small>${active ? 'Token gerado' : 'Revogado em'}</small><span>${date(active ? user.tokenCreatedAt : user.revokedAt)}</span></div>
     <div class="repo-actions">
+      <button class="button small" data-action="edit-mcp-access" data-user="${user.id}">Editar acessos</button>
       ${active
         ? `<button class="button small" data-action="rotate-mcp-token" data-user="${user.id}" data-name="${escapeHtml(user.name)}">Gerar novo token</button><button class="button small danger" data-action="revoke-mcp-token" data-user="${user.id}" data-name="${escapeHtml(user.name)}">Revogar</button>`
         : `<button class="button small primary" data-action="reactivate-mcp-user" data-user="${user.id}" data-name="${escapeHtml(user.name)}">Reativar</button>`}
@@ -139,35 +143,93 @@ async function renderMcpUsers() {
   currentView = 'mcp-users'; currentWorkspace = null;
   setNavigation('mcp-users');
   setHeader('Usuários MCP', 'Administração / Acesso MCP', '<button class="button primary" data-action="new-mcp-user">＋ Novo usuário</button>');
-  const { users, accessMode, systemAccess } = await api('/api/mcp-users');
+  const [{ users, accessMode, systemAccess }, accessOptions] = await Promise.all([
+    api('/api/mcp-users'),
+    api('/api/mcp-access-options')
+  ]);
+  currentMcpUsers = users;
+  mcpAccessOptions = accessOptions.workspaces;
   const activeCount = users.filter(user => user.status === 'active').length;
   const totalActive = activeCount + (systemAccess ? 1 : 0);
   const modeCopy = `${totalActive} token${totalActive === 1 ? '' : 's'} ativo${totalActive === 1 ? '' : 's'}, incluindo a credencial técnica. Requisições sem uma chave válida são bloqueadas.`;
   content.innerHTML = `<div class="access-banner ${accessMode}"><div><strong>${accessMode === 'strict' ? 'Autenticação obrigatória' : 'Acesso inicial sem token'}</strong><p>${modeCopy}</p></div><code>${escapeHtml(new URL('/mcp', location.origin).toString())}</code></div>
-    <article class="mcp-system-card"><div><span class="user-avatar">SYS</span><div><strong>Sistema / Playground</strong><p>Credencial técnica criada automaticamente para validações da instalação e uso manual no MCP Playground.</p></div></div><div class="repo-actions"><button class="button small" data-action="reveal-system-token">Exibir token</button><button class="button small danger" data-action="rotate-system-token">Gerar novo token</button></div></article>
+    <article class="mcp-system-card"><div><span class="user-avatar">SYS</span><div><strong>Sistema / Playground</strong><p>Credencial técnica com acesso irrestrito, criada automaticamente para validações da instalação e uso manual no MCP Playground.</p></div></div><div class="repo-actions"><button class="button small" data-action="reveal-system-token">Exibir token</button><button class="button small danger" data-action="rotate-system-token">Gerar novo token</button></div></article>
     ${users.length
       ? `<div class="toolbar"><span class="subtle">${users.length} usuário${users.length === 1 ? '' : 's'} · ${activeCount} ativo${activeCount === 1 ? '' : 's'}</span></div><div class="mcp-user-list">${users.map(mcpUserRow).join('')}</div>`
       : `<div class="empty"><div><div class="empty-icon">♙</div><h2>Nenhum desenvolvedor cadastrado</h2><p>O endpoint já está protegido pela credencial técnica. Crie tokens individuais para os desenvolvedores que utilizarão o MCP.</p><button class="button primary" data-action="new-mcp-user">Criar primeiro usuário</button></div></div>`}`;
 }
 
+function mcpAccessPicker() {
+  const repositories = mcpAccessOptions.flatMap(workspace => workspace.repositories);
+  return `<div class="field"><label>Repositórios permitidos</label><p class="field-help">O workspace apenas seleciona seus repositórios atuais em conjunto. A permissão salva é individual por repositório.</p><div class="mcp-access-picker">${mcpAccessOptions.map(workspace => {
+    const empty = workspace.repositories.length === 0;
+    return `<section class="mcp-access-workspace" data-access-workspace="${escapeHtml(workspace.id)}"><label class="mcp-access-workspace-head"><input type="checkbox" name="mcp-workspace" ${empty ? 'disabled' : ''}><span><strong>${escapeHtml(workspace.name)}</strong><small>${workspace.repositories.length} repo${workspace.repositories.length === 1 ? '' : 's'}</small></span></label><div class="mcp-access-repositories">${workspace.repositories.map(repository => `<label class="mcp-access-repository"><input type="checkbox" name="mcp-repository" value="${escapeHtml(repository.id)}" ${selectedMcpRepositories.has(repository.id) ? 'checked' : ''}><span><strong>${escapeHtml(repository.fullName)}</strong><small>${repository.indexed ? `Projeto: ${escapeHtml(repository.project)}` : 'Aguardando indexação'}</small></span><span class="badge ${repository.indexed ? '' : 'pending'}">${repository.indexed ? 'indexado' : 'não indexado'}</span></label>`).join('') || '<p class="mcp-access-empty">Nenhum repositório neste workspace.</p>'}</div></section>`;
+  }).join('') || '<p class="mcp-access-empty">Crie um workspace e adicione repositórios antes de cadastrar usuários MCP.</p>'}</div><div class="picker-summary"><span>${repositories.length} ${repositories.length === 1 ? 'disponível' : 'disponíveis'}</span><strong id="mcp-access-selection">0 selecionados</strong></div></div>`;
+}
+
+function updateMcpAccessSelection() {
+  $$('.mcp-access-workspace').forEach(section => {
+    const workspaceInput = $('input[name=mcp-workspace]', section);
+    const repositoryInputs = $$('input[name=mcp-repository]', section);
+    const selected = repositoryInputs.filter(input => input.checked).length;
+    if (workspaceInput) {
+      workspaceInput.checked = repositoryInputs.length > 0 && selected === repositoryInputs.length;
+      workspaceInput.indeterminate = selected > 0 && selected < repositoryInputs.length;
+    }
+  });
+  selectedMcpRepositories = new Set($$('input[name=mcp-repository]:checked').map(input => input.value));
+  const count = selectedMcpRepositories.size;
+  const summary = $('#mcp-access-selection');
+  if (summary) summary.textContent = `${count} selecionado${count === 1 ? '' : 's'}`;
+  const save = $('[data-action="save-mcp-user"], [data-action="save-mcp-access"]');
+  if (save) save.disabled = count === 0;
+}
+
 function newMcpUserModal() {
-  openModal(`<h2 class="modal-title">Novo usuário MCP</h2><p class="modal-copy">Um token individual será gerado e exibido uma única vez após o cadastro.</p><div class="field"><label for="mcp-user-name">Nome</label><input id="mcp-user-name" maxlength="100" autofocus placeholder="Ex.: Maria Silva"></div><div class="field"><label for="mcp-user-identity">E-mail ou login</label><input id="mcp-user-identity" maxlength="160" placeholder="maria@empresa.com"></div><div class="field"><label for="mcp-user-description">Descrição</label><textarea id="mcp-user-description" maxlength="240" placeholder="Time ou finalidade do acesso"></textarea></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-user">Criar e gerar token</button></div>`);
+  selectedMcpRepositories = new Set();
+  openModal(`<h2 class="modal-title">Novo usuário MCP</h2><p class="modal-copy">Um token individual será gerado e exibido uma única vez após o cadastro.</p><div class="field"><label for="mcp-user-name">Nome</label><input id="mcp-user-name" maxlength="100" autofocus placeholder="Ex.: Maria Silva"></div><div class="field"><label for="mcp-user-identity">E-mail ou login</label><input id="mcp-user-identity" maxlength="160" placeholder="maria@empresa.com"></div><div class="field"><label for="mcp-user-description">Descrição</label><textarea id="mcp-user-description" maxlength="240" placeholder="Time ou finalidade do acesso"></textarea></div>${mcpAccessPicker()}<div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-user" disabled>Criar e gerar token</button></div>`);
+  updateMcpAccessSelection();
+}
+
+function editMcpAccessModal(user) {
+  selectedMcpRepositories = new Set(user.repositoryIds || []);
+  openModal(`<h2 class="modal-title">Acessos de ${escapeHtml(user.name)}</h2><p class="modal-copy">Alterações entram em vigor nas próximas chamadas e não exigem gerar outro token.</p>${mcpAccessPicker()}<div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-access" data-user="${escapeHtml(user.id)}">Salvar acessos</button></div>`);
+  updateMcpAccessSelection();
 }
 
 function mcpTokenModal(name, token) {
-  latestMcpToken = token;
-  openModal(`<h2 class="modal-title">Token de ${escapeHtml(name)}</h2><p class="modal-copy token-warning">Copie este token agora. Por segurança, ele não será exibido novamente pelo painel.</p><div class="token-box"><code>${escapeHtml(token)}</code><button class="button small" type="button" data-action="copy-mcp-token">Copiar token</button></div><div class="client-example"><small>Cabeçalho de autenticação</small><code>Authorization: Bearer ${escapeHtml(token)}</code></div><div class="modal-actions"><button class="button primary" value="cancel">Concluir</button></div>`);
+  openModal(`<h2 class="modal-title">Token de ${escapeHtml(name)}</h2><p class="modal-copy token-warning">Copie este token agora. Por segurança, ele não será exibido novamente pelo painel.</p><div class="token-box"><code id="generated-mcp-token">${escapeHtml(token)}</code><button class="button small" type="button" data-action="copy-mcp-token">Copiar token</button></div><div class="client-example"><small>Cabeçalho de autenticação</small><code>Authorization: Bearer ${escapeHtml(token)}</code></div><div class="modal-actions"><button class="button primary" value="cancel">Concluir</button></div>`);
 }
 
 async function copyText(value) {
-  if (navigator.clipboard?.writeText) {
-    try { await navigator.clipboard.writeText(value); return; } catch { /* HTTP em IP local pode bloquear a Clipboard API */ }
+  if (!value) throw new Error('O token não está mais disponível. Gere ou exiba o token novamente.');
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(value); return 'clipboard'; } catch { /* use fallback below */ }
   }
   const input = document.createElement('textarea');
-  input.value = value; input.style.position = 'fixed'; input.style.opacity = '0';
-  document.body.append(input); input.select();
-  const copied = document.execCommand('copy'); input.remove();
-  if (!copied) throw new Error('Não foi possível copiar automaticamente. Selecione o token manualmente.');
+  input.value = value;
+  input.readOnly = true;
+  input.setAttribute('aria-hidden', 'true');
+  input.style.cssText = 'position:fixed;top:0;left:0;width:2px;height:2px;padding:0;border:0;opacity:.01;z-index:9999';
+  document.body.append(input);
+  input.focus({ preventScroll:true });
+  input.select();
+  input.setSelectionRange(0, value.length);
+  let copied = false;
+  try { copied = document.execCommand('copy'); } catch { /* browser blocked legacy clipboard */ }
+  input.remove();
+  if (copied) return 'legacy';
+
+  const tokenNode = $('#generated-mcp-token');
+  if (tokenNode) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(tokenNode);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  window.prompt('A cópia automática foi bloqueada pelo navegador. Copie o token abaixo:', value);
+  return 'manual';
 }
 
 function newWorkspaceModal() {
@@ -224,6 +286,15 @@ function updateRepositorySelection() {
   $('[data-action="clone-selected"]').disabled = count === 0;
 }
 
+document.addEventListener('change', event => {
+  if (event.target.matches('input[name=mcp-workspace]')) {
+    const section = event.target.closest('.mcp-access-workspace');
+    $$('input[name=mcp-repository]', section).forEach(input => { input.checked = event.target.checked; });
+    updateMcpAccessSelection();
+  }
+  if (event.target.matches('input[name=mcp-repository]')) updateMcpAccessSelection();
+});
+
 async function refreshJobs() {
   try {
     jobs = (await api('/api/jobs')).jobs;
@@ -244,12 +315,29 @@ document.addEventListener('click', async event => {
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
     if (action === 'new-mcp-user') return newMcpUserModal();
+    if (action === 'edit-mcp-access') {
+      const user = currentMcpUsers.find(item => item.id === target.dataset.user);
+      if (!user) throw new Error('Usuário MCP não encontrado. Atualize a página.');
+      return editMcpAccessModal(user);
+    }
     if (action === 'save-mcp-user') {
       target.disabled = true;
-      const result = await api('/api/mcp-users', { method:'POST', body:JSON.stringify({ name:$('#mcp-user-name').value, identity:$('#mcp-user-identity').value, description:$('#mcp-user-description').value }) });
+      const result = await api('/api/mcp-users', { method:'POST', body:JSON.stringify({ name:$('#mcp-user-name').value, identity:$('#mcp-user-identity').value, description:$('#mcp-user-description').value, repositoryIds:[...selectedMcpRepositories] }) });
       closeModal(); await renderMcpUsers(); mcpTokenModal(result.user.name, result.token); return;
     }
-    if (action === 'copy-mcp-token') { await copyText(latestMcpToken); return toast('Token copiado.'); }
+    if (action === 'save-mcp-access') {
+      target.disabled = true;
+      await api(`/api/mcp-users/${target.dataset.user}/repositories`, { method:'PUT', body:JSON.stringify({ repositoryIds:[...selectedMcpRepositories] }) });
+      closeModal(); toast('Acessos atualizados.'); return renderMcpUsers();
+    }
+    if (action === 'copy-mcp-token') {
+      const token = $('#generated-mcp-token')?.textContent?.trim() || '';
+      const mode = await copyText(token);
+      if (mode === 'manual') return toast('Use Ctrl+C ou Cmd+C para copiar o token selecionado.');
+      target.textContent = 'Copiado ✓';
+      setTimeout(() => { if (target.isConnected) target.textContent = 'Copiar token'; }, 1800);
+      return toast('Token copiado.');
+    }
     if (action === 'reveal-system-token') {
       const result = await api('/api/mcp-system-token/reveal', { method:'POST' }); mcpTokenModal(result.name, result.token); return;
     }

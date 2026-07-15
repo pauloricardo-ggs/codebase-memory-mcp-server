@@ -12,6 +12,7 @@ Painel administrativo para organizar workspaces, clonar repositórios do GitHub 
 - indexação manual pelo Codebase Memory;
 - acompanhamento de operações, progresso, logs e erros;
 - persistência local dos workspaces e repositórios;
+- usuários MCP com autorização individual por repositório;
 - interface responsiva protegida por Nginx e autenticação.
 
 O token do GitHub é validado antes de ser salvo em `data/secrets/github-credentials.json`. O diretório recebe permissão `700` e o arquivo `600`; ambos ficam fora do Git. O token não é salvo no `.env`, na URL do clone ou nos logs e permanece disponível depois de rebuilds, reinicializações e novas execuções do instalador.
@@ -207,7 +208,34 @@ Authorization: Bearer cbm_mcp_...
 O painel permite revogar, rotacionar, reativar e excluir usuários. Revogar ou
 rotacionar remove imediatamente a chave anterior da lista aceita pelo gateway.
 Chaves adicionadas manualmente à configuração são preservadas, pois o painel
-altera somente entradas marcadas com `managedBy: codebase-memory-admin`.
+altera somente entradas marcadas com `managedBy: codebase-memory-admin`. Porém,
+uma chave manual sem `metadata.userId` correspondente a um usuário ativo do
+painel é recusada pelo guardrail; o fluxo suportado é criar a chave pelo menu
+**Usuários MCP**.
+
+Ao criar ou editar um usuário, os workspaces aparecem como seletores em massa,
+mas o cadastro persiste os identificadores individuais dos repositórios
+selecionados. Adicionar um repositório futuramente ao mesmo workspace não o
+libera automaticamente. Alterar a seleção entra em vigor nas chamadas seguintes
+sem exigir rotação do token.
+
+Tokens individuais expõem somente as ferramentas de análise e cada chamada é
+validada contra o argumento `project`. `list_projects` é filtrado para retornar
+apenas projetos autorizados. Ferramentas administrativas (`index_repository`,
+`delete_project`, `manage_adr` e `ingest_traces`) e `trace_path` no modo
+`cross_service` exigem a credencial **Sistema / Playground**, que permanece
+irrestrita.
+
+A validação é executada por um serviço gRPC ExtMcp interno na porta `3001`,
+configurado como `mcpGuardrails` em modo `failClosed`. Essa porta é visível
+somente na rede do Compose e nunca é publicada no host. O guardrail consulta o
+cadastro atual em `mcp-users.json`; se estiver indisponível ou não reconhecer o
+usuário, o AgentGateway recusa a chamada.
+
+Repositórios ainda não indexados podem ser selecionados, mas só aceitam chamadas
+quando a indexação registrar seu identificador `project`. Cadastros criados antes
+da introdução da ACL são migrados com zero repositórios permitidos e precisam ser
+editados uma vez pelo administrador.
 
 O token **Sistema / Playground** pode ser revelado ou rotacionado por um
 administrador. Para usar a UI oficial, abra **MCP → Tool Playground**, expanda

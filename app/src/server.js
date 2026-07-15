@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertSafeSegment, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify } from './lib.js';
+import { startMcpGuardrailServer } from './mcp-guardrail.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -19,11 +20,26 @@ const PORT = Number(process.env.PORT || 3000);
 const UI_PORT = Number(process.env.UI_PORT);
 const AGENTGATEWAY_UI_PORT = Number(process.env.AGENTGATEWAY_UI_PORT);
 const AGENTGATEWAY_ADMIN_URL = String(process.env.AGENTGATEWAY_ADMIN_URL || 'http://agentgateway:15000').replace(/\/+$/, '');
+const MCP_GUARDRAIL_ADDR = process.env.MCP_GUARDRAIL_ADDR || '0.0.0.0:3001';
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
 let state = await loadState(STATE_FILE);
 let mcpUserStore = await loadMcpUserStore(MCP_USERS_FILE);
+let stateMigrated = false;
+state.repositories = state.repositories.map(item => {
+  if (item.accessId) return item;
+  stateMigrated = true;
+  return { ...item, accessId: randomUUID() };
+});
+let mcpUsersMigrated = false;
+mcpUserStore.users = mcpUserStore.users.map(item => {
+  if (Array.isArray(item.repositoryIds)) return item;
+  mcpUsersMigrated = true;
+  return { ...item, repositoryIds: [] };
+});
+if (stateMigrated) await saveState(STATE_FILE, state);
+if (mcpUsersMigrated) await saveMcpUserStore(MCP_USERS_FILE, mcpUserStore);
 let mcpSystemToken = await loadSecret(MCP_SYSTEM_TOKEN_FILE);
 const storedGithubCredentials = await loadCredentials(GITHUB_CREDENTIALS_FILE);
 let githubToken = storedGithubCredentials?.token ?? '';
@@ -89,6 +105,41 @@ function mcpUserInput(input) {
   if (!name) throw new Error('Informe o nome do usuário MCP.');
   if (!identity) throw new Error('Informe o e-mail ou login do usuário MCP.');
   return { name, identity, description };
+}
+
+function mcpRepositoryIds(input, { required = true } = {}) {
+  if (!Array.isArray(input)) throw new Error('A seleção de repositórios possui formato inválido.');
+  const repositoryIds = [...new Set(input.map(value => String(value ?? '').trim()).filter(Boolean))];
+  if (required && !repositoryIds.length) throw new Error('Selecione pelo menos um repositório para o usuário MCP.');
+  if (repositoryIds.length > 500) throw new Error('A seleção excede o limite de 500 repositórios.');
+  for (const repositoryId of repositoryIds) {
+    if (!state.repositories.some(item => item.accessId === repositoryId)) {
+      throw new Error('Um dos repositórios selecionados não existe mais. Atualize a seleção.');
+    }
+  }
+  return repositoryIds;
+}
+
+function mcpAccess(userId) {
+  if (userId === MCP_SYSTEM_USER.id) return { system: true, allowedProjects: new Set() };
+  const user = mcpUserStore.users.find(item => item.id === userId && item.status === 'active');
+  if (!user) return null;
+  const allowedRepositoryIds = new Set(user.repositoryIds || []);
+  const allowedProjects = new Set(state.repositories
+    .filter(item => allowedRepositoryIds.has(item.accessId) && item.project)
+    .map(item => item.project));
+  return { system: false, allowedProjects };
+}
+
+async function commitMcpUserStoreOnly(nextStore) {
+  if (mcpUserMutation) throw new Error('Outra alteração de usuários MCP está em andamento. Tente novamente.');
+  mcpUserMutation = true;
+  try {
+    await saveMcpUserStore(MCP_USERS_FILE, nextStore);
+    mcpUserStore = nextStore;
+  } finally {
+    mcpUserMutation = false;
+  }
 }
 
 async function agentGatewayConfig(config) {
@@ -300,19 +351,47 @@ async function routeApi(request, response, url) {
       });
     }
     if (request.method === 'POST') {
-      const input = mcpUserInput(await body(request));
+      const payload = await body(request);
+      const input = mcpUserInput(payload);
+      const repositoryIds = mcpRepositoryIds(payload.repositoryIds);
       if (mcpUserStore.users.some(item => item.identity.toLowerCase() === input.identity.toLowerCase())) {
         throw new Error('Já existe um usuário MCP com esse e-mail ou login.');
       }
       const now = new Date().toISOString();
-      const issued = issueMcpToken({ id: randomUUID(), ...input, createdAt: now });
+      const issued = issueMcpToken({ id: randomUUID(), ...input, repositoryIds, createdAt: now });
       const nextStore = { managed: true, users: [...mcpUserStore.users, issued.user] };
       await commitMcpUserChange(nextStore, config => setMcpGatewayUserKey(config, issued.user, issued.token));
       return json(response, 201, { user: publicMcpUser(issued.user), token: issued.token });
     }
   }
+  if (url.pathname === '/api/mcp-access-options' && request.method === 'GET') {
+    return json(response, 200, {
+      workspaces: state.workspaces.map(item => ({
+        id: item.id,
+        name: item.name,
+        repositories: state.repositories
+          .filter(repository => repository.workspaceId === item.id)
+          .map(repository => ({
+            id: repository.accessId,
+            name: repository.name,
+            fullName: repository.fullName,
+            indexed: Boolean(repository.project),
+            project: repository.project || null
+          }))
+          .sort((a, b) => a.fullName.localeCompare(b.fullName))
+      }))
+    });
+  }
   if (parts[0] === 'mcp-users' && parts[1]) {
     const selected = mcpUser(parts[1]);
+    if (parts.length === 3 && parts[2] === 'repositories' && request.method === 'PUT') {
+      const payload = await body(request);
+      const repositoryIds = mcpRepositoryIds(payload.repositoryIds);
+      const updated = { ...selected, repositoryIds, updatedAt: new Date().toISOString() };
+      const nextStore = { managed: true, users: mcpUserStore.users.map(item => item.id === selected.id ? updated : item) };
+      await commitMcpUserStoreOnly(nextStore);
+      return json(response, 200, { user: publicMcpUser(updated) });
+    }
     if (parts.length === 2 && request.method === 'DELETE') {
       const nextStore = { managed: true, users: mcpUserStore.users.filter(item => item.id !== selected.id) };
       await commitMcpUserChange(nextStore, config => removeMcpGatewayUserKey(config, selected.id));
@@ -409,7 +488,7 @@ async function routeApi(request, response, url) {
         const id = slugify(remote.name);
         if (state.repositories.some(item => item.workspaceId === workspaceId && item.id === id)) continue;
         const target = safeChild(REPOSITORIES_DIR, workspaceId, id);
-        const item = { id, workspaceId, name: remote.name, fullName: remote.fullName, description: remote.description, private: remote.private, language: remote.language, defaultBranch: remote.defaultBranch, status: 'cloning', path: target, createdAt: new Date().toISOString() };
+        const item = { id, accessId: randomUUID(), workspaceId, name: remote.name, fullName: remote.fullName, description: remote.description, private: remote.private, language: remote.language, defaultBranch: remote.defaultBranch, status: 'cloning', path: target, createdAt: new Date().toISOString() };
         state.repositories.push(item);
         const job = createJob('clone', `Clonando ${remote.fullName}`, `${workspaceId}/${id}`, async (currentJob, log) => {
           await run('git', ['clone', remote.cloneUrl, target], { env: gitAuthEnvironment(githubToken), onOutput: log });
@@ -467,6 +546,7 @@ function serveStatic(response, pathname) {
   }).catch(() => { response.writeHead(404); response.end('Not found'); });
 }
 
+await startMcpGuardrailServer(mcpAccess, MCP_GUARDRAIL_ADDR);
 await provisionMcpSystemToken();
 
 http.createServer(async (request, response) => {

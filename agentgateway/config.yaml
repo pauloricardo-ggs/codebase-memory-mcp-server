@@ -21,6 +21,19 @@ mcp:
       allowOrigins: ["*"]
       allowHeaders: ["*"]
       exposeHeaders: ["Mcp-Session-Id"]
+    mcpGuardrails:
+      processors:
+        - kind: remote
+          methods:
+            tools/call: full
+            tools/list: response
+          host: admin:3001
+          failureMode: failClosed
+          metadata:
+            userId: apiKey.userId
+            toolName: mcp.tool.name
+          requestHeaders:
+            allowed: []
   targets:
     - name: codebase-memory
       stdio:

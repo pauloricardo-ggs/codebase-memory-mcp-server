@@ -5,6 +5,7 @@
 /cache/
 /repositories/
 /data/
+/app/node_modules/
 
 # Arquivos temporários do instalador
 .env.tmp

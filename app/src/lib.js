@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const MCP_USER_MANAGER = 'codebase-memory-admin';
+const MCP_GUARDRAIL_HOST = process.env.MCP_GUARDRAIL_HOST || 'admin:3001';
 
 export function slugify(value) {
   return String(value ?? '')
@@ -95,7 +96,7 @@ export function mcpTokenFingerprint(token) {
 
 export function publicMcpUser(user) {
   const visible = {};
-  for (const key of ['id', 'name', 'identity', 'description', 'status', 'keyPrefix', 'createdAt', 'updatedAt', 'tokenCreatedAt', 'revokedAt']) {
+  for (const key of ['id', 'name', 'identity', 'description', 'repositoryIds', 'status', 'keyPrefix', 'createdAt', 'updatedAt', 'tokenCreatedAt', 'revokedAt']) {
     if (Object.hasOwn(user, key)) visible[key] = user[key];
   }
   return visible;
@@ -152,7 +153,30 @@ function isManagedMcpKey(entry, userId) {
   return entry?.metadata?.managedBy === MCP_USER_MANAGER && entry.metadata.userId === userId;
 }
 
+export function ensureMcpGatewayGuardrail(config) {
+  const targets = config?.mcp?.targets;
+  if (!Array.isArray(targets) || !targets.length) {
+    throw new Error('O AgentGateway não possui um target MCP para proteger.');
+  }
+  config.mcp.policies ??= {};
+  config.mcp.policies.mcpGuardrails = {
+    processors: [{
+      kind: 'remote',
+      methods: { 'tools/call': 'full', 'tools/list': 'response' },
+      host: MCP_GUARDRAIL_HOST,
+      failureMode: 'failClosed',
+      metadata: {
+        userId: 'apiKey.userId',
+        toolName: 'mcp.tool.name'
+      },
+      requestHeaders: { allowed: [] }
+    }]
+  };
+  return config;
+}
+
 export function setMcpGatewayUserKey(config, user, token) {
+  ensureMcpGatewayGuardrail(config);
   const policy = ensureMcpApiKeyPolicy(config);
   policy.keys = policy.keys.filter(entry => !isManagedMcpKey(entry, user.id));
   policy.keys.push({
@@ -161,13 +185,15 @@ export function setMcpGatewayUserKey(config, user, token) {
       managedBy: MCP_USER_MANAGER,
       userId: user.id,
       user: user.name,
-      identity: user.identity
+      identity: user.identity,
+      access: user.id === 'system-playground' ? 'system' : 'repository-scoped'
     }
   });
   return config;
 }
 
 export function removeMcpGatewayUserKey(config, userId) {
+  ensureMcpGatewayGuardrail(config);
   const policy = ensureMcpApiKeyPolicy(config);
   policy.keys = policy.keys.filter(entry => !isManagedMcpKey(entry, userId));
   return config;

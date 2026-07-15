@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafeSegment, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify } from '../src/lib.js';
+import { assertSafeSegment, ensureMcpGatewayGuardrail, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, mcpTokenFingerprint, parseLastJsonLine, publicMcpUser, removeMcpGatewayUserKey, safeChild, saveCredentials, saveMcpUserStore, saveSecret, setMcpGatewayUserKey, slugify } from '../src/lib.js';
 
 test('slugify normaliza nomes de workspaces', () => {
   assert.equal(slugify('Pagamentos & Cobrança'), 'pagamentos-cobranca');
@@ -67,6 +67,7 @@ test('gerencia somente as chaves MCP pertencentes ao painel', () => {
   const config = {
     mcp: {
       port: 8787,
+      targets: [{ name: 'codebase-memory', stdio: { cmd: '/bin/example' } }],
       policies: {
         cors: { allowOrigins: ['*'] },
         apiKey: { mode: 'optional', keys: [{ key: 'manual-key', metadata: { owner: 'manual' } }] }
@@ -81,6 +82,9 @@ test('gerencia somente as chaves MCP pertencentes ao painel', () => {
   assert.equal(config.mcp.policies.apiKey.mode, 'strict');
   assert.deepEqual(config.mcp.policies.cors, { allowOrigins: ['*'] });
   assert.deepEqual(config.mcp.policies.apiKey.keys.map(item => item.key), ['manual-key', 'rotated-token']);
+  assert.equal(config.mcp.policies.mcpGuardrails.processors[0].failureMode, 'failClosed');
+  assert.equal(config.mcp.policies.mcpGuardrails.processors[0].metadata.userId, 'apiKey.userId');
+  assert.equal(config.mcp.targets[0].policies, undefined);
 
   removeMcpGatewayUserKey(config, user.id);
   assert.deepEqual(config.mcp.policies.apiKey.keys.map(item => item.key), ['manual-key']);
@@ -88,22 +92,26 @@ test('gerencia somente as chaves MCP pertencentes ao painel', () => {
 });
 
 test('mantém strict com zero chaves depois da última revogação', () => {
-  const config = { mcp: { policies: {} } };
+  const config = { mcp: { policies: {}, targets: [{ name: 'codebase-memory', stdio: { cmd: '/bin/example' } }] } };
   removeMcpGatewayUserKey(config, 'missing-user');
   assert.deepEqual(config.mcp.policies.apiKey, { keys: [], mode: 'strict' });
+});
+
+test('recusa configurar guardrail sem um target MCP', () => {
+  assert.throws(() => ensureMcpGatewayGuardrail({ mcp: { targets: [] } }), /target MCP/);
 });
 
 test('cadastro MCP persiste protegido sem expor o hash na API', async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'cbm-mcp-users-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'secrets', 'mcp-users.json');
-  const user = { id: 'user-1', name: 'Maria', tokenHash: 'secret-hash', status: 'active' };
+  const user = { id: 'user-1', name: 'Maria', repositoryIds: ['repo-1'], tokenHash: 'secret-hash', status: 'active' };
   const store = { managed: true, users: [user] };
 
   await saveMcpUserStore(file, store);
 
   assert.deepEqual(await loadMcpUserStore(file), store);
-  assert.deepEqual(publicMcpUser(user), { id: 'user-1', name: 'Maria', status: 'active' });
+  assert.deepEqual(publicMcpUser(user), { id: 'user-1', name: 'Maria', repositoryIds: ['repo-1'], status: 'active' });
   if (process.platform !== 'win32') {
     assert.equal((await stat(path.dirname(file))).mode & 0o777, 0o700);
     assert.equal((await stat(file)).mode & 0o777, 0o600);

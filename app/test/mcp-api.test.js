@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import grpc from '@grpc/grpc-js';
+import protoLoader from '@grpc/proto-loader';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -47,6 +49,28 @@ async function request(url, options = {}) {
   return payload;
 }
 
+function guardrailClient(port) {
+  const protoRoot = path.resolve(import.meta.dirname, '..', 'proto');
+  const definition = protoLoader.loadSync(path.join(protoRoot, 'ext_mcp.proto'), {
+    includeDirs: [protoRoot],
+    keepCase: false,
+    longs: String,
+    enums: String,
+    defaults: false,
+    oneofs: true
+  });
+  const descriptor = grpc.loadPackageDefinition(definition);
+  return new descriptor.agentgateway.dev.ext_mcp.ExtMcp(`127.0.0.1:${port}`, grpc.credentials.createInsecure());
+}
+
+function checkTool(client, userId, name, args) {
+  return new Promise((resolve, reject) => client.CheckRequest({
+    method: 'tools/call',
+    metadataContext: { fields: { userId: { stringValue: userId } } },
+    mcpRequest: Buffer.from(JSON.stringify({ name, arguments: args }))
+  }, (error, response) => error ? reject(error) : resolve(response)));
+}
+
 test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'cbm-mcp-api-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -76,6 +100,34 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   t.after(() => close(gateway));
 
   const appPort = await availablePort();
+  const guardrailPort = await availablePort();
+  const appDataDirectory = path.join(directory, 'data');
+  await mkdir(appDataDirectory, { recursive: true });
+  await writeFile(path.join(appDataDirectory, 'state.json'), JSON.stringify({
+    workspaces: [{ id: 'plataforma', name: 'Plataforma', createdAt: '2026-01-01T00:00:00.000Z' }],
+    repositories: [
+      {
+        id: 'api',
+        accessId: 'repository-access-1',
+        workspaceId: 'plataforma',
+        name: 'api',
+        fullName: 'empresa/api',
+        path: path.join(directory, 'repositories', 'plataforma', 'api'),
+        project: 'plataforma-api',
+        status: 'indexed'
+      },
+      {
+        id: 'worker',
+        accessId: 'repository-access-2',
+        workspaceId: 'plataforma',
+        name: 'worker',
+        fullName: 'empresa/worker',
+        path: path.join(directory, 'repositories', 'plataforma', 'worker'),
+        project: 'plataforma-worker',
+        status: 'indexed'
+      }
+    ]
+  }));
   const app = spawn(process.execPath, ['src/server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
     env: {
@@ -83,9 +135,11 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
       PORT: String(appPort),
       UI_PORT: '8787',
       AGENTGATEWAY_UI_PORT: '8788',
-      APP_DATA_DIR: path.join(directory, 'data'),
+      APP_DATA_DIR: appDataDirectory,
       CBM_ALLOWED_ROOT: path.join(directory, 'repositories'),
-      AGENTGATEWAY_ADMIN_URL: `http://127.0.0.1:${gatewayPort}`
+      AGENTGATEWAY_ADMIN_URL: `http://127.0.0.1:${gatewayPort}`,
+      MCP_GUARDRAIL_ADDR: `127.0.0.1:${guardrailPort}`,
+      MCP_GUARDRAIL_HOST: `admin:${guardrailPort}`
     },
     stdio: ['ignore', 'ignore', 'pipe']
   });
@@ -98,16 +152,19 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
     }
   });
   await waitFor(`http://127.0.0.1:${appPort}/api/health`);
+  const guardrail = guardrailClient(guardrailPort);
+  t.after(() => guardrail.close());
 
   assert.equal(gatewayConfig.mcp.policies.apiKey.mode, 'strict');
   assert.equal(gatewayConfig.mcp.policies.apiKey.keys.length, 1);
   assert.equal(gatewayConfig.mcp.policies.apiKey.keys[0].metadata.userId, 'system-playground');
+  assert.equal(gatewayConfig.mcp.policies.mcpGuardrails.processors[0].host, `admin:${guardrailPort}`);
   const system = await request(`http://127.0.0.1:${appPort}/api/mcp-system-token/reveal`, { method: 'POST' });
   assert.equal(system.token, gatewayConfig.mcp.policies.apiKey.keys[0].key);
 
   const created = await request(`http://127.0.0.1:${appPort}/api/mcp-users`, {
     method: 'POST',
-    body: JSON.stringify({ name: 'Maria Silva', identity: 'maria@empresa.com', description: 'Plataforma' })
+    body: JSON.stringify({ name: 'Maria Silva', identity: 'maria@empresa.com', description: 'Plataforma', repositoryIds: ['repository-access-1'] })
   });
   assert.match(created.token, /^cbm_mcp_/);
   assert.equal(gatewayConfig.mcp.policies.apiKey.mode, 'strict');
@@ -120,6 +177,26 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   assert.equal(listed.users.length, 1);
   assert.equal('tokenHash' in listed.users[0], false);
   assert.equal(JSON.stringify(listed).includes(created.token), false);
+  assert.deepEqual(listed.users[0].repositoryIds, ['repository-access-1']);
+
+  const options = await request(`http://127.0.0.1:${appPort}/api/mcp-access-options`);
+  assert.equal(options.workspaces[0].repositories[0].id, 'repository-access-1');
+  assert.equal(options.workspaces[0].repositories[0].project, 'plataforma-api');
+
+  const allowedBeforeUpdate = await checkTool(guardrail, created.user.id, 'search_graph', { project: 'plataforma-api' });
+  const deniedBeforeUpdate = await checkTool(guardrail, created.user.id, 'search_graph', { project: 'plataforma-worker' });
+  assert.ok(allowedBeforeUpdate.pass);
+  assert.equal(deniedBeforeUpdate.error.code, 'PERMISSION_DENIED');
+
+  const updatedAccess = await request(`http://127.0.0.1:${appPort}/api/mcp-users/${created.user.id}/repositories`, {
+    method: 'PUT',
+    body: JSON.stringify({ repositoryIds: ['repository-access-2'] })
+  });
+  assert.deepEqual(updatedAccess.user.repositoryIds, ['repository-access-2']);
+  const deniedAfterUpdate = await checkTool(guardrail, created.user.id, 'search_graph', { project: 'plataforma-api' });
+  const allowedAfterUpdate = await checkTool(guardrail, created.user.id, 'search_graph', { project: 'plataforma-worker' });
+  assert.equal(deniedAfterUpdate.error.code, 'PERMISSION_DENIED');
+  assert.ok(allowedAfterUpdate.pass);
 
   await request(`http://127.0.0.1:${appPort}/api/mcp-users/${created.user.id}/revoke`, { method: 'POST' });
   assert.deepEqual(gatewayConfig.mcp.policies.apiKey.keys.map(item => item.metadata.userId), ['system-playground']);
