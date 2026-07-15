@@ -12,7 +12,7 @@ Painel administrativo para organizar workspaces, clonar repositórios do GitHub 
 - indexação manual pelo Codebase Memory;
 - acompanhamento de operações, progresso, logs e erros;
 - persistência local dos workspaces e repositórios;
-- interface responsiva acessível somente pelo host local.
+- interface responsiva protegida por Nginx e autenticação.
 
 O token do GitHub é validado antes de ser salvo em `data/secrets/github-credentials.json`. O diretório recebe permissão `700` e o arquivo `600`; ambos ficam fora do Git. O token não é salvo no `.env`, na URL do clone ou nos logs e permanece disponível depois de rebuilds, reinicializações e novas execuções do instalador.
 
@@ -45,15 +45,17 @@ Durante a instalação, escolha o orçamento de memória:
 
 As opções em GB são convertidas usando `1 GB = 1024 MB`, conforme o formato de `CBM_MEM_BUDGET_MB`.
 
-Todas as interações acontecem no início: primeiro a seleção de memória e depois, se necessário, a senha do `sudo`. A credencial do `sudo` é mantida ativa durante a execução e a instalação de pacotes usa modo não interativo, evitando que o processo pare aguardando uma resposta depois de iniciar as etapas demoradas.
+Todas as interações acontecem no início: orçamento de memória, usuário e senha do painel e, se necessário, a senha do `sudo`. Em uma reinstalação, deixar a nova senha vazia preserva a credencial existente. A autorização do `sudo` é mantida ativa durante a execução e a instalação de pacotes usa modo não interativo.
 
 Ao final, abra:
 
 ```text
-http://127.0.0.1:8787
+http://IP-OU-DNS-DA-VM:8787
 ```
 
-Por segurança, o Compose publica o painel somente em `127.0.0.1`. Para acesso remoto, utilize uma VPN ou um proxy reverso com TLS e autenticação; não altere o bind para `0.0.0.0` sem adicionar esses controles.
+O TLS será terminado pela infraestrutura externa da AWS quando o domínio e o certificado forem configurados. Até lá, use o acesso HTTP direto somente em uma rede confiável, pois HTTP Basic não cifra as credenciais durante o transporte.
+
+O container `admin` não publica nenhuma porta no host. Apenas o container `proxy` publica `8787`; portanto, acessar `http://IP:8787` ou tentar acessar diretamente a API administrativa não funciona.
 
 ## Primeiro uso
 
@@ -78,6 +80,8 @@ codebase-memory-mcp-server/
 │   └── src/              # API e operações administrativas
 ├── cache/                # índices; ignorado pelo Git
 ├── data/                 # estado do painel; ignorado pelo Git
+│   └── secrets/proxy/    # hash da senha do Nginx
+├── nginx/                # configuração versionada do proxy
 ├── repositories/         # clones por workspace; ignorado pelo Git
 ├── .env                  # gerado; ignorado pelo Git
 ├── compose.yaml
@@ -110,6 +114,7 @@ CBM_HOST_BIN=/home/usuario/.local/bin/codebase-memory-mcp
 LOCAL_UID=1000
 LOCAL_GID=1000
 UI_PORT=8787
+ADMIN_USERNAME=admin
 ```
 
 `LOCAL_UID` e `LOCAL_GID` fazem o container gravar arquivos com o mesmo proprietário do usuário que executou a instalação.
@@ -136,13 +141,13 @@ docker compose ps
 Consulte os logs:
 
 ```bash
-docker compose logs -f admin
+docker compose logs -f admin proxy
 ```
 
 Reinicie o painel:
 
 ```bash
-docker compose restart admin
+docker compose restart admin proxy
 ```
 
 Atualize a imagem depois de alterar o código:
@@ -182,13 +187,17 @@ docker compose config
 
 ## Segurança
 
-Esta primeira versão é um painel administrativo de host único:
+O acesso ao painel possui as seguintes proteções:
 
-- escuta somente em `127.0.0.1`;
-- persiste o token somente em `data/secrets/`, com acesso restrito ao usuário da instalação;
-- valida identificadores e mantém caminhos dentro da raiz permitida;
-- não utiliza shell para construir comandos Git ou Codebase Memory;
-- executa o container com UID/GID não privilegiados;
-- limita as montagens aos diretórios necessários e ao binário somente leitura.
+- o backend não publica portas no host e só recebe tráfego da rede interna do Compose;
+- somente o Nginx publica a porta `8787`;
+- autenticação HTTP Basic com senha armazenada como hash APR1;
+- rate limiting por endereço IP;
+- headers contra framing, MIME sniffing e vazamento de referrer;
+- `.htpasswd` armazenado em `data/secrets/proxy/`;
+- token do GitHub armazenado separadamente em `data/secrets/`, com acesso restrito;
+- identificadores e caminhos são mantidos dentro da raiz permitida;
+- comandos Git e Codebase Memory não são construídos por interpolação de shell;
+- containers executam com o UID/GID não privilegiado da instalação.
 
-Antes de disponibilizar o painel em rede, adicione autenticação, autorização, TLS, auditoria e proteção contra tentativas repetidas. Para uma integração corporativa permanente com o GitHub, a evolução recomendada é substituir o PAT por uma GitHub App com permissões mínimas e tokens de curta duração.
+Para múltiplos usuários, substitua o Basic Auth por SSO/OIDC e adicione auditoria individual. Para uma integração corporativa permanente com o GitHub, prefira uma GitHub App com permissões mínimas e tokens de curta duração.

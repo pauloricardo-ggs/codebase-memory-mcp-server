@@ -7,11 +7,13 @@ BASE_DIR="$SCRIPT_DIR"
 REPOSITORIES_DIR="${BASE_DIR}/repositories"
 CACHE_DIR="${BASE_DIR}/cache"
 DATA_DIR="${BASE_DIR}/data"
+PROXY_SECRETS_DIR="${DATA_DIR}/secrets/proxy"
 ENV_FILE="${BASE_DIR}/.env"
 CBM_BIN="${HOME}/.local/bin/codebase-memory-mcp"
 INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
 CURRENT_USER="$(id -un)"
 SUDO_KEEPALIVE_PID=''
+ADMIN_PASSWORD=''
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
@@ -118,7 +120,7 @@ keep_sudo_alive() {
 
 install_dependencies() {
   run_step "Atualizando a lista de pacotes" sudo apt-get update
-  run_step "Instalando dependências do sistema" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y ca-certificates curl git jq openssh-client util-linux docker.io
+  run_step "Instalando dependências do sistema" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y ca-certificates curl git jq openssh-client openssl util-linux docker.io
 
   if ! docker compose version >/dev/null 2>&1 && ! sudo docker compose version >/dev/null 2>&1; then
     if apt-cache show docker-compose-v2 >/dev/null 2>&1; then
@@ -129,7 +131,7 @@ install_dependencies() {
   fi
 
   local command_name
-  for command_name in bash curl git jq flock ssh docker; do
+  for command_name in bash curl git jq flock ssh openssl docker; do
     command -v "$command_name" >/dev/null 2>&1 || fail "Dependência não encontrada: ${command_name}"
   done
 
@@ -173,17 +175,90 @@ ask_memory_budget() {
   success "Budget definido em ${CBM_MEM_BUDGET_MB} MB"
 }
 
+read_existing_environment_value() {
+  local variable_name="$1"
+  if [[ -f "$ENV_FILE" ]]; then
+    sed -n "s/^${variable_name}=//p" "$ENV_FILE" | tail -n 1
+  fi
+}
+
+ask_proxy_access() {
+  local suggested_username input password_confirmation existing_username=''
+
+  if [[ -f "${PROXY_SECRETS_DIR}/.htpasswd" ]]; then
+    existing_username="$(cut -d: -f1 "${PROXY_SECRETS_DIR}/.htpasswd" | head -n 1)"
+  fi
+  suggested_username="${existing_username:-$(read_existing_environment_value ADMIN_USERNAME)}"
+  suggested_username="${suggested_username:-admin}"
+
+  printf "\n${COLOR_BOLD}Acesso ao painel${COLOR_RESET}\n"
+  while true; do
+    read -r -p "Usuário administrativo [${suggested_username}]: " input
+    ADMIN_USERNAME="${input:-$suggested_username}"
+    if [[ "$ADMIN_USERNAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+      break
+    fi
+    warn "Use apenas letras, números, ponto, hífen ou underscore."
+  done
+
+  while true; do
+    if [[ -f "${PROXY_SECRETS_DIR}/.htpasswd" && "$ADMIN_USERNAME" == "$existing_username" ]]; then
+      read -r -s -p 'Nova senha (deixe vazia para manter a atual): ' ADMIN_PASSWORD
+      printf '\n'
+      [[ -z "$ADMIN_PASSWORD" ]] && break
+    else
+      read -r -s -p 'Senha administrativa (mínimo de 12 caracteres): ' ADMIN_PASSWORD
+      printf '\n'
+    fi
+
+    if (( ${#ADMIN_PASSWORD} < 12 )); then
+      warn "A senha precisa ter pelo menos 12 caracteres."
+      continue
+    fi
+    read -r -s -p 'Confirme a senha: ' password_confirmation
+    printf '\n'
+    if [[ "$ADMIN_PASSWORD" == "$password_confirmation" ]]; then
+      break
+    fi
+    warn "As senhas não coincidem."
+  done
+
+  success "Autenticação do painel configurada para a porta 8787"
+}
+
 create_local_structure() {
-  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR"
+  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "$PROXY_SECRETS_DIR"
   chmod 755 "$REPOSITORIES_DIR"
-  chmod 700 "$CACHE_DIR" "$DATA_DIR"
+  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR"
   success "Estrutura local criada em ${BASE_DIR}"
+}
+
+create_proxy_credentials() {
+  local password_hash
+  local htpasswd_file="${PROXY_SECRETS_DIR}/.htpasswd"
+
+  if [[ -n "$ADMIN_PASSWORD" ]]; then
+    password_hash="$(printf '%s\n' "$ADMIN_PASSWORD" | openssl passwd -apr1 -stdin)"
+    printf '%s:%s\n' "$ADMIN_USERNAME" "$password_hash" >"${htpasswd_file}.tmp"
+    chmod 600 "${htpasswd_file}.tmp"
+    mv "${htpasswd_file}.tmp" "$htpasswd_file"
+  fi
+  ADMIN_PASSWORD=''
+
+  [[ -f "$htpasswd_file" ]] || fail "Não foi possível criar a credencial do proxy."
+  chmod 600 "$htpasswd_file"
+  rm -f \
+    "${PROXY_SECRETS_DIR}/tls.crt" \
+    "${PROXY_SECRETS_DIR}/tls.key" \
+    "${PROXY_SECRETS_DIR}/tls.crt.tmp" \
+    "${PROXY_SECRETS_DIR}/tls.key.tmp"
+  success "Credencial do proxy configurada"
 }
 
 create_environment_file() {
   local temporary_file="${ENV_FILE}.tmp"
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=8787\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=8787\nADMIN_USERNAME=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ADMIN_USERNAME" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -227,12 +302,12 @@ start_admin_panel_command() {
 validate_admin_panel_command() {
   local attempt
   for attempt in {1..30}; do
-    if curl -fsS "http://127.0.0.1:8787/api/health" >/dev/null; then
+    if curl -fsS "http://127.0.0.1:8787/healthz" >/dev/null; then
       return 0
     fi
     sleep 1
   done
-  docker_compose logs --tail=100 admin
+  docker_compose logs --tail=100 admin proxy
   return 1
 }
 
@@ -253,8 +328,9 @@ show_summary() {
   printf '  Ambiente     : %s\n' "$ENV_FILE"
   printf '  Budget       : %s MB\n' "$CBM_MEM_BUDGET_MB"
   printf '  Executável   : %s\n' "$CBM_BIN"
+  printf '  Usuário web  : %s\n' "$ADMIN_USERNAME"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
-  printf '\nPainel administrativo:\n  http://127.0.0.1:8787\n\n'
+  printf '\nPainel administrativo protegido:\n  http://<IP-OU-DNS-DA-VM>:8787\n\n'
 }
 
 main() {
@@ -263,11 +339,13 @@ main() {
   printf "${COLOR_BOLD}Configuração inicial${COLOR_RESET}\n"
   info "Responda agora às perguntas necessárias. Depois disso, a instalação seguirá sem interrupções."
   ask_memory_budget
+  ask_proxy_access
   validate_sudo
   keep_sudo_alive
   success "Configuração concluída; iniciando instalação não interativa"
   install_dependencies
   create_local_structure
+  create_proxy_credentials
   create_environment_file
   install_codebase_memory
   run_step "Aplicando configurações do Codebase Memory" configure_codebase_memory_command

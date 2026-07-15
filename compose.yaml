@@ -19,10 +19,29 @@ services:
       - ./repositories:/data/repositories
       - ./cache:/data/cache
       - ${CBM_HOST_BIN}:/usr/local/bin/codebase-memory-mcp:ro
-    ports:
-      - "${UI_PORT:-8787}:3000"
+    expose:
+      - "3000"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+  proxy:
+    image: nginx:1.27-alpine
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    restart: unless-stopped
+    depends_on:
+      admin:
+        condition: service_healthy
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./data/secrets/proxy:/etc/nginx/secrets:ro
+    ports:
+      - "${UI_PORT:-8787}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 10s
       timeout: 3s
       retries: 6

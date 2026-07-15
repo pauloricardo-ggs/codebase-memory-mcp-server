@@ -7,3 +7,4 @@ CBM_HOST_BIN=/home/usuario/.local/bin/codebase-memory-mcp
 LOCAL_UID=1000
 LOCAL_GID=1000
 UI_PORT=8787
+ADMIN_USERNAME=admin
