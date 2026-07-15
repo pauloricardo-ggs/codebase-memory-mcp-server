@@ -38,11 +38,45 @@ async function renderWorkspaces() {
   content.innerHTML = workspaces.length ? `<div class="toolbar"><span class="subtle">${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'} configurado${workspaces.length === 1 ? '' : 's'}</span></div><div class="grid">${workspaces.map(item => `<article class="card workspace-card" data-workspace="${item.id}"><div class="card-head"><span class="workspace-icon">⌘</span><span class="badge">${item.repositoryCount} repo${item.repositoryCount === 1 ? '' : 's'}</span></div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || 'Sem descrição')}</p><div class="card-meta"><span>Criado em ${date(item.createdAt)}</span><span>Ver →</span></div></article>`).join('')}</div>` : `<div class="empty"><div><div class="empty-icon">⌘</div><h2>Organize seus repositórios em workspaces</h2><p>Crie um workspace para agrupar projetos relacionados e iniciar clones e indexações.</p><button class="button primary" data-action="new-workspace">Criar primeiro workspace</button></div></div>`;
 }
 
+function repositoryRow(repo) {
+  return `
+    <article class="repo-row">
+      <div class="repo-title">
+        <span class="icon">◇</span>
+        <div class="repo-identity">
+          <strong>${escapeHtml(repo.fullName)}</strong>
+          <small>${escapeHtml(repo.description || 'Sem descrição')}</small>
+          ${repo.language ? `<span class="language-badge">${escapeHtml(repo.language)}</span>` : ''}
+        </div>
+      </div>
+
+      <div class="git-reference" aria-label="Branch e commit">
+        <small>Branch / commit</small>
+        <div>
+          <strong><span aria-hidden="true">⑂</span> ${escapeHtml(repo.defaultBranch || '—')}</strong>
+          <span class="git-separator">·</span>
+          <code>${escapeHtml(repo.commit || 'sem commit')}</code>
+        </div>
+      </div>
+
+      <div class="repo-status">
+        <small>Status</small>
+        <span class="status ${escapeHtml(repo.status)}">${escapeHtml(repo.status)}</span>
+      </div>
+
+      <div class="repo-actions">
+        <button class="button small" data-action="sync" data-repo="${repo.id}">Sincronizar</button>
+        <button class="button small" data-action="index" data-repo="${repo.id}">Indexar</button>
+        <button class="button small danger" data-action="delete-repo" data-repo="${repo.id}" data-name="${escapeHtml(repo.fullName)}">Excluir</button>
+      </div>
+    </article>`;
+}
+
 async function renderWorkspace(id) {
   currentView = 'workspace'; currentWorkspace = id;
   const { workspace, repositories } = await api(`/api/workspaces/${id}`);
   setHeader(workspace.name, 'Workspaces / Detalhes', '<button class="button" data-action="delete-workspace">Excluir workspace</button> <button class="button primary" data-action="add-repositories">＋ Adicionar repositórios</button>');
-  content.innerHTML = repositories.length ? `<div class="toolbar"><button class="button small" data-action="back">← Voltar</button><span class="subtle">${repositories.length} repositório${repositories.length === 1 ? '' : 's'}</span></div><div class="repo-list">${repositories.map(repo => `<article class="repo-row"><div class="repo-title"><span class="icon">◇</span><div><strong>${escapeHtml(repo.fullName)}</strong><small>${escapeHtml(repo.description || 'Sem descrição')}</small></div></div><div class="repo-cell">${escapeHtml(repo.language || '—')}<small>${escapeHtml(repo.defaultBranch || '—')}</small></div><div class="repo-cell"><span class="status ${repo.status}">${escapeHtml(repo.status)}</span><small>${repo.commit || 'sem commit'}</small></div><div class="repo-actions"><button class="button small" data-action="sync" data-repo="${repo.id}">Sincronizar</button><button class="button small" data-action="index" data-repo="${repo.id}">Indexar</button><button class="button small danger" data-action="delete-repo" data-repo="${repo.id}" data-name="${escapeHtml(repo.fullName)}">Excluir</button></div></article>`).join('')}</div>` : `<button class="button small" data-action="back">← Voltar</button><div class="empty" style="margin-top:18px"><div><div class="empty-icon">◇</div><h2>Nenhum repositório neste workspace</h2><p>Selecione repositórios disponíveis na sua conta do GitHub e eles serão clonados automaticamente.</p><button class="button primary" data-action="add-repositories">Adicionar repositórios</button></div></div>`;
+  content.innerHTML = repositories.length ? `<div class="toolbar"><button class="button small" data-action="back">← Voltar</button><span class="subtle">${repositories.length} repositório${repositories.length === 1 ? '' : 's'}</span></div><div class="repo-list">${repositories.map(repositoryRow).join('')}</div>` : `<button class="button small" data-action="back">← Voltar</button><div class="empty" style="margin-top:18px"><div><div class="empty-icon">◇</div><h2>Nenhum repositório neste workspace</h2><p>Selecione repositórios disponíveis na sua conta do GitHub e eles serão clonados automaticamente.</p><button class="button primary" data-action="add-repositories">Adicionar repositórios</button></div></div>`;
 }
 
 function renderJobs() {
