@@ -280,7 +280,7 @@ ask_proxy_access() {
       printf '\n'
       [[ -z "$ADMIN_PASSWORD" ]] && break
     else
-      read -r -s -p 'Senha administrativa para o painel e Open WebUI (mínimo de 6 caracteres): ' ADMIN_PASSWORD
+      read -r -s -p 'Senha administrativa (mínimo de 6 caracteres): ' ADMIN_PASSWORD
       printf '\n'
     fi
 
@@ -462,6 +462,8 @@ validate_agentgateway_command() {
     if (!systemToken) throw new Error("Token MCP do sistema não foi criado.");
     let lastError;
     for (let attempt = 1; attempt <= 30; attempt += 1) {
+      let sessionId;
+      let catalogValidated = false;
       try {
         const initializeBody = JSON.stringify({
           jsonrpc: "2.0",
@@ -498,7 +500,7 @@ validate_agentgateway_command() {
         });
         const body = await response.text();
         if (response.ok && body.includes("\"result\"")) {
-          const sessionId = response.headers.get("mcp-session-id");
+          sessionId = response.headers.get("mcp-session-id");
           if (!sessionId) throw new Error("MCP initialize não retornou Mcp-Session-Id.");
           const headers = {
             accept: "application/json, text/event-stream",
@@ -558,18 +560,35 @@ validate_agentgateway_command() {
           if (missingTools.length) {
             const error = new Error(
               `Catálogo MCP incompatível; ferramentas ausentes: ${missingTools.join(", ")}. ` +
+              `Ferramentas anunciadas: ${[...advertisedTools].sort().join(", ") || "nenhuma"}. ` +
               "Atualize o binário codebase-memory-mcp antes de concluir a instalação."
             );
             error.code = "MCP_CATALOG_INCOMPATIBLE";
             throw error;
           }
-          process.exit(0);
+          catalogValidated = true;
         }
         lastError = new Error(`HTTP ${response.status} ${body}`);
       } catch (error) {
         if (error?.code === "MCP_CATALOG_INCOMPATIBLE") throw error;
         lastError = error;
+      } finally {
+        if (sessionId) {
+          try {
+            await fetch("http://proxy:8080/mcp", {
+              method: "DELETE",
+              headers: {
+                authorization: `Bearer ${systemToken}`,
+                "mcp-session-id": sessionId
+              },
+              signal: AbortSignal.timeout(5000)
+            });
+          } catch {
+            // A validação original é mais importante que uma falha de limpeza.
+          }
+        }
       }
+      if (catalogValidated) process.exit(0);
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     throw new Error(`MCP initialize não ficou disponível: ${lastError?.message}`);
