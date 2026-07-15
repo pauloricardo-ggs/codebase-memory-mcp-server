@@ -173,7 +173,7 @@ services:
       - docling-data:/app/data
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.10.0
+    image: ghcr.io/open-webui/open-webui:v0.10.2
     restart: unless-stopped
     depends_on:
       ollama:

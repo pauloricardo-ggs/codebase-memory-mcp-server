@@ -16,7 +16,9 @@ CURRENT_USER="$(id -un)"
 SUDO_KEEPALIVE_PID=''
 ADMIN_PASSWORD=''
 ADMIN_EMAIL=''
+OPENWEBUI_ADMIN_NAME='Admin'
 OPENWEBUI_PREVIOUS_EMAIL=''
+OPENWEBUI_PREVIOUS_NAME=''
 OPENWEBUI_PREVIOUS_PASSWORD=''
 OPENWEBUI_DESIRED_PASSWORD=''
 OLLAMA_CHAT_MODEL='qwen3:14b'
@@ -254,6 +256,7 @@ ask_proxy_access() {
   fi
   if [[ -f "${DATA_DIR}/secrets/openwebui.env" ]]; then
     OPENWEBUI_PREVIOUS_EMAIL="$(sed -n 's/^WEBUI_ADMIN_EMAIL=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
+    OPENWEBUI_PREVIOUS_NAME="$(sed -n 's/^WEBUI_ADMIN_NAME=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
     OPENWEBUI_PREVIOUS_PASSWORD="$(sed -n 's/^WEBUI_ADMIN_PASSWORD=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
   fi
   suggested_email="${OPENWEBUI_PREVIOUS_EMAIL:-$(read_existing_environment_value ADMIN_EMAIL)}"
@@ -326,7 +329,7 @@ create_proxy_credentials() {
     local webui_secret
     webui_secret="$(openssl rand -hex 32)"
     printf 'WEBUI_ADMIN_EMAIL=%s\nWEBUI_ADMIN_PASSWORD=%s\nWEBUI_ADMIN_NAME=%s\nWEBUI_SECRET_KEY=%s\n' \
-      "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$ADMIN_EMAIL" "$webui_secret" >"${openwebui_env}.tmp"
+      "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$OPENWEBUI_ADMIN_NAME" "$webui_secret" >"${openwebui_env}.tmp"
     chmod 600 "${openwebui_env}.tmp"
     mv "${openwebui_env}.tmp" "$openwebui_env"
   fi
@@ -598,8 +601,10 @@ migrate_openwebui_admin_command() {
     return 0
   fi
 
-  # Sem mudança de e-mail ou senha, não há migração a executar.
-  if [[ "$ADMIN_EMAIL" == "$OPENWEBUI_PREVIOUS_EMAIL" && "$OPENWEBUI_DESIRED_PASSWORD" == "$OPENWEBUI_PREVIOUS_PASSWORD" ]]; then
+  # Sem mudança de credenciais e com o nome correto, não há migração.
+  if [[ "$ADMIN_EMAIL" == "$OPENWEBUI_PREVIOUS_EMAIL" \
+    && "$OPENWEBUI_DESIRED_PASSWORD" == "$OPENWEBUI_PREVIOUS_PASSWORD" \
+    && "$OPENWEBUI_PREVIOUS_NAME" == "$OPENWEBUI_ADMIN_NAME" ]]; then
     ADMIN_PASSWORD=''
     OPENWEBUI_PREVIOUS_PASSWORD=''
     OPENWEBUI_DESIRED_PASSWORD=''
@@ -633,7 +638,7 @@ migrate_openwebui_admin_command() {
 
   update_payload="$(jq -cn \
     --arg email "$ADMIN_EMAIL" \
-    --arg name "$ADMIN_EMAIL" \
+    --arg name "$OPENWEBUI_ADMIN_NAME" \
     --arg password "$OPENWEBUI_DESIRED_PASSWORD" \
     '{email:$email,name:$name,password:$password}')"
   update_response="$(printf '%s' "$update_payload" | curl -fsS \
@@ -642,12 +647,15 @@ migrate_openwebui_admin_command() {
     -H "Authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     --data-binary @-)"
-  printf '%s' "$update_response" | jq -e --arg email "${ADMIN_EMAIL,,}" '.email == $email and .role == "admin"' >/dev/null
+  printf '%s' "$update_response" | jq -e \
+    --arg email "${ADMIN_EMAIL,,}" \
+    --arg name "$OPENWEBUI_ADMIN_NAME" \
+    '.email == $email and .name == $name and .role == "admin"' >/dev/null
 
   webui_secret="$(sed -n 's/^WEBUI_SECRET_KEY=//p' "$openwebui_env" | tail -n 1)"
   [[ -n "$webui_secret" ]] || fail "WEBUI_SECRET_KEY não encontrada em ${openwebui_env}."
   printf 'WEBUI_ADMIN_EMAIL=%s\nWEBUI_ADMIN_PASSWORD=%s\nWEBUI_ADMIN_NAME=%s\nWEBUI_SECRET_KEY=%s\n' \
-    "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$ADMIN_EMAIL" "$webui_secret" >"${openwebui_env}.tmp"
+    "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$OPENWEBUI_ADMIN_NAME" "$webui_secret" >"${openwebui_env}.tmp"
   chmod 600 "${openwebui_env}.tmp"
   mv "${openwebui_env}.tmp" "$openwebui_env"
 

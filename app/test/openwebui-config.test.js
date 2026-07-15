@@ -44,6 +44,8 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   assert.match(install, /ask_ollama_model/);
   assert.match(install, /E-mail administrativo/);
   assert.match(install, /mínimo de 6 caracteres/);
+  assert.match(install, /OPENWEBUI_ADMIN_NAME='Admin'/);
+  assert.match(install, /OPENWEBUI_PREVIOUS_NAME.*OPENWEBUI_ADMIN_NAME/);
   assert.match(install, /docker_compose wait openwebui-bootstrap/);
   assert.match(install, /migrate_openwebui_admin_command/);
   assert.match(install, /api\/v1\/users\/\$\{user_id\}\/update/);
@@ -72,7 +74,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
       return;
     }
     if (request.url === '/api/v1/users/admin-id/update') {
-      response.end(JSON.stringify({ email: 'novo@example.com', role: 'admin' }));
+      response.end(JSON.stringify({ email: 'novo@example.com', name: 'Admin', role: 'admin' }));
       return;
     }
     response.statusCode = 404;
@@ -118,13 +120,13 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
       authorization: 'Bearer session-token',
       payload: {
         email: 'novo@example.com',
-        name: 'novo@example.com',
+        name: 'Admin',
         password: 'senha-nova'
       }
     });
     assert.equal(
       await readFile(path.join(temporaryRoot, 'data/secrets/openwebui.env'), 'utf8'),
-      'WEBUI_ADMIN_EMAIL=novo@example.com\nWEBUI_ADMIN_PASSWORD=senha-nova\nWEBUI_ADMIN_NAME=novo@example.com\nWEBUI_SECRET_KEY=segredo-preservado\n'
+      'WEBUI_ADMIN_EMAIL=novo@example.com\nWEBUI_ADMIN_PASSWORD=senha-nova\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=segredo-preservado\n'
     );
   } finally {
     await new Promise(resolve => server.close(resolve));

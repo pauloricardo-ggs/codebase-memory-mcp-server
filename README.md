@@ -58,7 +58,7 @@ Durante a instalação, informe:
 - o e-mail administrativo;
 - uma senha administrativa com pelo menos 6 caracteres.
 
-O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers, baixa o modelo escolhido e o `bge-m3`, configura os exemplos do Open WebUI e valida o endpoint MCP. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual. Se o e-mail ou a senha mudar, o instalador autentica com a credencial anterior, atualiza o administrador no banco do Open WebUI e preserva chats, documentos e Knowledge Bases.
+O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers, baixa o modelo escolhido e o `bge-m3`, configura os exemplos do Open WebUI e valida o endpoint MCP. A conta do Open WebUI usa o nome `Admin` e o e-mail informado na instalação. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual. Se o e-mail ou a senha mudar, o instalador autentica com a credencial anterior, atualiza o administrador no banco do Open WebUI e preserva chats, documentos e Knowledge Bases.
 
 Ao concluir, os serviços ficam disponíveis nos seguintes endereços:
 
