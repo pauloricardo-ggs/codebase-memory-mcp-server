@@ -330,7 +330,7 @@ show_summary() {
   printf '  Executável   : %s\n' "$CBM_BIN"
   printf '  Usuário web  : %s\n' "$ADMIN_USERNAME"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
-  printf '\nPainel administrativo protegido:\n  http://<IP-OU-DNS-DA-VM>:8787\n\n'
+  printf '\nPainel administrativo protegido:\n  http://<IP-OU-DNS-DO-SERVIDOR>:8787\n\n'
 }
 
 main() {

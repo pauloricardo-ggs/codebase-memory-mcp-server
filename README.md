@@ -45,15 +45,13 @@ Durante a instalação, escolha o orçamento de memória:
 
 As opções em GB são convertidas usando `1 GB = 1024 MB`, conforme o formato de `CBM_MEM_BUDGET_MB`.
 
-Todas as interações acontecem no início: orçamento de memória, usuário e senha do painel e, se necessário, a senha do `sudo`. Em uma reinstalação, deixar a nova senha vazia preserva a credencial existente. A autorização do `sudo` é mantida ativa durante a execução e a instalação de pacotes usa modo não interativo.
+Em uma reinstalação, deixar a nova senha vazia preserva a credencial existente.
 
 Ao final, abra:
 
 ```text
-http://IP-OU-DNS-DA-VM:8787
+http://IP-OU-DNS-DO-SERVIDOR:8787
 ```
-
-O TLS será terminado pela infraestrutura externa da AWS quando o domínio e o certificado forem configurados. Até lá, use o acesso HTTP direto somente em uma rede confiável, pois HTTP Basic não cifra as credenciais durante o transporte.
 
 O container `admin` não publica nenhuma porta no host. Apenas o container `proxy` publica `8787`; portanto, acessar `http://IP:8787` ou tentar acessar diretamente a API administrativa não funciona.
 
@@ -130,38 +128,6 @@ auto_watch = true
 
 `CBM_ALLOWED_ROOT` restringe os caminhos aceitos, enquanto `auto_index=false` mantém a primeira indexação como uma ação administrativa explícita. O botão **Indexar** executa essa ação pelo backend do painel.
 
-## Operação do painel
-
-Verifique os containers:
-
-```bash
-docker compose ps
-```
-
-Consulte os logs:
-
-```bash
-docker compose logs -f admin proxy
-```
-
-Reinicie o painel:
-
-```bash
-docker compose restart admin proxy
-```
-
-Atualize a imagem depois de alterar o código:
-
-```bash
-docker compose up -d --build
-```
-
-Pare o painel sem excluir dados:
-
-```bash
-docker compose down
-```
-
 ## Comportamento das exclusões
 
 - Um workspace só pode ser excluído quando não possui repositórios gerenciados.
@@ -169,21 +135,6 @@ docker compose down
 - Excluir um repositório remove seu clone local depois de uma confirmação na interface.
 - Operações concorrentes no mesmo repositório são bloqueadas.
 - `cache/`, `data/` e `repositories/` não são removidos por `docker compose down`.
-
-## Desenvolvimento
-
-Os testes do backend não possuem dependências externas:
-
-```bash
-cd app
-npm test
-```
-
-Valide o Compose:
-
-```bash
-docker compose config
-```
 
 ## Segurança
 
