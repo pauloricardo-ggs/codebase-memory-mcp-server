@@ -16,7 +16,6 @@ export const MCP_ANALYSIS_TOOLS = new Set([
   'search_code',
   'list_projects',
   'index_status',
-  'check_index_coverage',
   'detect_changes'
 ]);
 

@@ -44,7 +44,7 @@ Esse modo pode atravessar repositórios e exige a credencial de sistema. Limitar
 
 ### Índice incompleto ou desatualizado
 
-Consultar `index_status`, `check_index_coverage` e `detect_changes`. Complementar com o código local e qualificar a conclusão. Não usar ausência no grafo como prova de ausência no código.
+Consultar `index_status` e `detect_changes`. Complementar com o código local e qualificar a conclusão. Não usar ausência no grafo como prova de ausência no código.
 
 ### Timeout, falha de conexão ou MCP indisponível
 

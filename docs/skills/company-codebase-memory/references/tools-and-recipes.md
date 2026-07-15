@@ -15,7 +15,6 @@ Os schemas publicados pelo servidor em `tools/list` são a autoridade para nomes
 | `search_code` | Pesquisar texto ou símbolos no conteúdo indexado | Confirmar no arquivo local quando detalhes exatos importarem. |
 | `get_code_snippet` | Recuperar o contexto de uma ocorrência | Pedir somente o contexto necessário para reduzir ruído. |
 | `index_status` | Verificar estado e atualidade da indexação | Usar diante de resultados ausentes ou suspeita de atualização pendente. |
-| `check_index_coverage` | Avaliar se o índice sustenta uma conclusão abrangente | Obrigatório antes de conclusões negativas ou exaustivas. |
 | `detect_changes` | Identificar diferenças entre o índice e o repositório | Usar quando o código pode ter mudado depois da indexação. |
 
 ## Receita: compreender um fluxo de negócio
@@ -59,7 +58,7 @@ Para perguntas como "quem chama?", "isso ainda é usado?" ou "existe implementa�
 
 1. pesquisar nomes exatos e variantes;
 2. consultar relações no grafo;
-3. verificar `check_index_coverage`, `index_status` e, quando aplicável, `detect_changes`;
+3. verificar `index_status` e, quando aplicável, `detect_changes`;
 4. executar busca local;
 5. usar linguagem limitada ao escopo realmente verificado.
 

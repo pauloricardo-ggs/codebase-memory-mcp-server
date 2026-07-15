@@ -11,7 +11,9 @@ PROXY_SECRETS_DIR="${DATA_DIR}/secrets/proxy"
 AGENTGATEWAY_DATA_DIR="${DATA_DIR}/agentgateway"
 ENV_FILE="${BASE_DIR}/.env"
 CBM_BIN="${HOME}/.local/bin/codebase-memory-mcp"
-INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
+CBM_VERSION="v0.9.0"
+INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/${CBM_VERSION}/install.sh"
+RELEASE_DOWNLOAD_URL="https://github.com/DeusData/codebase-memory-mcp/releases/download/${CBM_VERSION}"
 CURRENT_USER="$(id -un)"
 SUDO_KEEPALIVE_PID=''
 ADMIN_PASSWORD=''
@@ -367,7 +369,7 @@ create_environment_file() {
 }
 
 install_codebase_memory_command() {
-  curl -fsSL "$INSTALL_URL" | bash -s -- --ui --skip-config
+  curl -fsSL "$INSTALL_URL" | CBM_DOWNLOAD_URL="$RELEASE_DOWNLOAD_URL" bash -s -- --ui --skip-config
 }
 
 install_codebase_memory() {
@@ -529,7 +531,6 @@ validate_agentgateway_command() {
             "search_code",
             "list_projects",
             "index_status",
-            "check_index_coverage",
             "detect_changes"
           ]);
           const advertisedTools = new Set();

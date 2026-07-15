@@ -34,7 +34,7 @@ Adaptar a sequência ao pedido e aos schemas publicados em `tools/list`:
 3. Usar `trace_path` para seguir chamadores, chamadas e caminhos internos. Com token individual, não selecionar o modo `cross_service`, pois ele pode atravessar repositórios e exige credencial de sistema.
 4. Usar `search_code` para localizar texto, símbolos ou implementações e `get_code_snippet` para recuperar o trecho relevante.
 5. Usar `get_graph_schema` antes de montar consultas quando os tipos de nós, relações ou argumentos não estiverem claros.
-6. Consultar `index_status`, `check_index_coverage` e `detect_changes` quando a resposta depender de completude, atualidade ou ausência de resultados.
+6. Consultar `index_status` e `detect_changes` quando a resposta depender de completude, atualidade ou ausência de resultados.
 7. Abrir os arquivos relevantes no repositório local e confirmar assinaturas, condições, tratamento de erros, configuração e testes.
 8. Expandir a busca somente quando a evidência atual não sustentar a conclusão.
 
