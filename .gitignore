@@ -1,0 +1,10 @@
+# Configuração local e segredos
+.env
+
+# Dados gerados pelo instalador
+/cache/
+/repositories/
+/scripts/
+
+# Arquivos temporários do instalador
+.env.tmp

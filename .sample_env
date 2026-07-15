@@ -1,0 +1,5 @@
+# Este arquivo é apenas uma referência. O install.sh gera o .env automaticamente
+# com caminhos absolutos baseados no diretório em que o repositório foi clonado.
+CBM_CACHE_DIR=/caminho/absoluto/codebase-memory-mcp-server/cache
+CBM_ALLOWED_ROOT=/caminho/absoluto/codebase-memory-mcp-server/repositories
+CBM_MEM_BUDGET_MB=8192
