@@ -406,9 +406,77 @@ validate_agentgateway_command() {
           signal: AbortSignal.timeout(5000)
         });
         const body = await response.text();
-        if (response.ok && body.includes("\"result\"")) process.exit(0);
+        if (response.ok && body.includes("\"result\"")) {
+          const sessionId = response.headers.get("mcp-session-id");
+          if (!sessionId) throw new Error("MCP initialize não retornou Mcp-Session-Id.");
+          const headers = {
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+            authorization: `Bearer ${systemToken}`,
+            "mcp-session-id": sessionId
+          };
+          await fetch("http://proxy:8080/mcp", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              method: "notifications/initialized",
+              params: {}
+            }),
+            signal: AbortSignal.timeout(5000)
+          });
+
+          const requiredTools = new Set([
+            "search_graph",
+            "query_graph",
+            "trace_path",
+            "get_code_snippet",
+            "get_graph_schema",
+            "get_architecture",
+            "search_code",
+            "list_projects",
+            "index_status",
+            "check_index_coverage",
+            "detect_changes"
+          ]);
+          const advertisedTools = new Set();
+          let cursor;
+          do {
+            const listResponse = await fetch("http://proxy:8080/mcp", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: `tools-${cursor || "first"}`,
+                method: "tools/list",
+                params: cursor ? { cursor } : {}
+              }),
+              signal: AbortSignal.timeout(10000)
+            });
+            const listBody = await listResponse.text();
+            const dataLine = listBody.split("\n").find(line => line.startsWith("data:"));
+            if (!listResponse.ok || !dataLine) {
+              throw new Error(`tools/list falhou: HTTP ${listResponse.status} ${listBody}`);
+            }
+            const payload = JSON.parse(dataLine.slice(5));
+            for (const tool of payload.result?.tools || []) advertisedTools.add(tool.name);
+            cursor = payload.result?.nextCursor;
+          } while (cursor);
+
+          const missingTools = [...requiredTools].filter(name => !advertisedTools.has(name));
+          if (missingTools.length) {
+            const error = new Error(
+              `Catálogo MCP incompatível; ferramentas ausentes: ${missingTools.join(", ")}. ` +
+              "Atualize o binário codebase-memory-mcp antes de concluir a instalação."
+            );
+            error.code = "MCP_CATALOG_INCOMPATIBLE";
+            throw error;
+          }
+          process.exit(0);
+        }
         lastError = new Error(`HTTP ${response.status} ${body}`);
       } catch (error) {
+        if (error?.code === "MCP_CATALOG_INCOMPATIBLE") throw error;
         lastError = error;
       }
       await new Promise(resolve => setTimeout(resolve, 1000));

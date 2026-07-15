@@ -15,7 +15,10 @@ services:
     entrypoint: ["/bin/sh", "/usr/local/bin/configure-agentgateway"]
 
   agentgateway:
-    image: cr.agentgateway.dev/agentgateway:v1.3.1
+    build:
+      context: .
+      dockerfile: agentgateway/Dockerfile
+    image: codebase-memory-agentgateway:1.3.1-git
     user: "${LOCAL_UID}:${LOCAL_GID}"
     init: true
     restart: unless-stopped
