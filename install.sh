@@ -24,6 +24,9 @@ OPENWEBUI_PREVIOUS_NAME=''
 OPENWEBUI_PREVIOUS_PASSWORD=''
 OPENWEBUI_DESIRED_PASSWORD=''
 OLLAMA_CHAT_MODEL='qwen3:14b'
+ENABLE_GOOGLE_DRIVE_INTEGRATION='false'
+GOOGLE_DRIVE_CLIENT_ID=''
+GOOGLE_DRIVE_API_KEY=''
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
@@ -50,6 +53,8 @@ cleanup() {
   ADMIN_PASSWORD=''
   OPENWEBUI_PREVIOUS_PASSWORD=''
   OPENWEBUI_DESIRED_PASSWORD=''
+  GOOGLE_DRIVE_CLIENT_ID=''
+  GOOGLE_DRIVE_API_KEY=''
   if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -243,6 +248,72 @@ ask_ollama_model() {
   success "Modelo selecionado: ${OLLAMA_CHAT_MODEL}"
 }
 
+ask_google_drive_integration() {
+  local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
+  local answer default_answer='n' prompt='[s/N]' client_id api_key existing_enabled='false'
+
+  if [[ -f "$openwebui_env" ]]; then
+    existing_enabled="$(sed -n 's/^ENABLE_GOOGLE_DRIVE_INTEGRATION=//p' "$openwebui_env" | tail -n 1)"
+    GOOGLE_DRIVE_CLIENT_ID="$(sed -n 's/^GOOGLE_DRIVE_CLIENT_ID=//p' "$openwebui_env" | tail -n 1)"
+    GOOGLE_DRIVE_API_KEY="$(sed -n 's/^GOOGLE_DRIVE_API_KEY=//p' "$openwebui_env" | tail -n 1)"
+  fi
+  if [[ "$existing_enabled" == 'true' || ( -n "$GOOGLE_DRIVE_CLIENT_ID" && -n "$GOOGLE_DRIVE_API_KEY" ) ]]; then
+    default_answer='s'
+    prompt='[S/n]'
+  fi
+
+  printf "\n${COLOR_BOLD}Integração com Google Drive${COLOR_RESET}\n"
+  printf 'Essa integração permite selecionar e importar arquivos do Google Drive no Open WebUI.\n'
+  while true; do
+    read -r -p "Deseja habilitar o Google Drive? ${prompt}: " answer
+    case "${answer:-$default_answer}" in
+      s|S|sim|Sim|SIM|y|Y|yes|Yes|YES)
+        ENABLE_GOOGLE_DRIVE_INTEGRATION='true'
+        break
+        ;;
+      n|N|nao|Nao|NAO|não|Não|NÃO|no|No|NO)
+        ENABLE_GOOGLE_DRIVE_INTEGRATION='false'
+        GOOGLE_DRIVE_CLIENT_ID=''
+        GOOGLE_DRIVE_API_KEY=''
+        success 'Integração com Google Drive desabilitada'
+        return
+        ;;
+      *) warn 'Responda com s ou n.' ;;
+    esac
+  done
+
+  while true; do
+    if [[ -n "$GOOGLE_DRIVE_CLIENT_ID" ]]; then
+      read -r -p 'OAuth Client ID do Google [Enter para manter o atual]: ' client_id
+      client_id="${client_id:-$GOOGLE_DRIVE_CLIENT_ID}"
+    else
+      read -r -p 'OAuth Client ID do Google: ' client_id
+    fi
+    if [[ "$client_id" =~ ^[^[:space:]=]+\.apps\.googleusercontent\.com$ ]]; then
+      GOOGLE_DRIVE_CLIENT_ID="$client_id"
+      break
+    fi
+    warn 'Informe um OAuth Client ID válido, terminado em .apps.googleusercontent.com.'
+  done
+
+  while true; do
+    if [[ -n "$GOOGLE_DRIVE_API_KEY" ]]; then
+      read -r -s -p 'API Key do Google Picker [Enter para manter a atual]: ' api_key
+    else
+      read -r -s -p 'API Key do Google Picker: ' api_key
+    fi
+    printf '\n'
+    api_key="${api_key:-$GOOGLE_DRIVE_API_KEY}"
+    if [[ -n "$api_key" && ! "$api_key" =~ [[:space:]=] ]]; then
+      GOOGLE_DRIVE_API_KEY="$api_key"
+      break
+    fi
+    warn 'Informe uma API Key válida, sem espaços.'
+  done
+
+  success 'Integração com Google Drive habilitada'
+}
+
 read_existing_environment_value() {
   local variable_name="$1"
   if [[ -f "$ENV_FILE" ]]; then
@@ -327,13 +398,18 @@ create_proxy_credentials() {
   fi
 
   local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
+  local stored_email stored_password stored_name webui_secret
   if [[ ! -s "$openwebui_env" ]]; then
-    local webui_secret
     webui_secret="$(openssl rand -hex 32)"
-    printf 'WEBUI_ADMIN_EMAIL=%s\nWEBUI_ADMIN_PASSWORD=%s\nWEBUI_ADMIN_NAME=%s\nWEBUI_SECRET_KEY=%s\n' \
-      "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$OPENWEBUI_ADMIN_NAME" "$webui_secret" >"${openwebui_env}.tmp"
-    chmod 600 "${openwebui_env}.tmp"
-    mv "${openwebui_env}.tmp" "$openwebui_env"
+    write_openwebui_environment "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$OPENWEBUI_ADMIN_NAME" "$webui_secret"
+  else
+    stored_email="$(sed -n 's/^WEBUI_ADMIN_EMAIL=//p' "$openwebui_env" | tail -n 1)"
+    stored_password="$(sed -n 's/^WEBUI_ADMIN_PASSWORD=//p' "$openwebui_env" | tail -n 1)"
+    stored_name="$(sed -n 's/^WEBUI_ADMIN_NAME=//p' "$openwebui_env" | tail -n 1)"
+    webui_secret="$(sed -n 's/^WEBUI_SECRET_KEY=//p' "$openwebui_env" | tail -n 1)"
+    [[ -n "$stored_email" && -n "$stored_password" && -n "$stored_name" && -n "$webui_secret" ]] \
+      || fail "Configuração administrativa incompleta em ${openwebui_env}."
+    write_openwebui_environment "$stored_email" "$stored_password" "$stored_name" "$webui_secret"
   fi
   ADMIN_PASSWORD=''
 
@@ -345,6 +421,30 @@ create_proxy_credentials() {
     "${PROXY_SECRETS_DIR}/tls.crt.tmp" \
     "${PROXY_SECRETS_DIR}/tls.key.tmp"
   success "Credencial do proxy configurada"
+}
+
+write_openwebui_environment() {
+  local admin_email="$1" admin_password="$2" admin_name="$3" webui_secret="$4"
+  local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
+
+  {
+    if [[ -f "$openwebui_env" ]]; then
+      sed -E '/^(WEBUI_ADMIN_EMAIL|WEBUI_ADMIN_PASSWORD|WEBUI_ADMIN_NAME|WEBUI_SECRET_KEY|ENABLE_GOOGLE_DRIVE_INTEGRATION|GOOGLE_DRIVE_CLIENT_ID|GOOGLE_DRIVE_API_KEY)=/d' "$openwebui_env"
+    fi
+    printf 'WEBUI_ADMIN_EMAIL=%s\n' "$admin_email"
+    printf 'WEBUI_ADMIN_PASSWORD=%s\n' "$admin_password"
+    printf 'WEBUI_ADMIN_NAME=%s\n' "$admin_name"
+    printf 'WEBUI_SECRET_KEY=%s\n' "$webui_secret"
+    printf 'ENABLE_GOOGLE_DRIVE_INTEGRATION=%s\n' "$ENABLE_GOOGLE_DRIVE_INTEGRATION"
+    if [[ "$ENABLE_GOOGLE_DRIVE_INTEGRATION" == 'true' ]]; then
+      [[ -n "$GOOGLE_DRIVE_CLIENT_ID" && -n "$GOOGLE_DRIVE_API_KEY" ]] \
+        || fail 'As credenciais do Google Drive não foram informadas.'
+      printf 'GOOGLE_DRIVE_CLIENT_ID=%s\n' "$GOOGLE_DRIVE_CLIENT_ID"
+      printf 'GOOGLE_DRIVE_API_KEY=%s\n' "$GOOGLE_DRIVE_API_KEY"
+    fi
+  } >"${openwebui_env}.tmp"
+  chmod 600 "${openwebui_env}.tmp"
+  mv "${openwebui_env}.tmp" "$openwebui_env"
 }
 
 create_environment_file() {
@@ -674,10 +774,8 @@ migrate_openwebui_admin_command() {
 
   webui_secret="$(sed -n 's/^WEBUI_SECRET_KEY=//p' "$openwebui_env" | tail -n 1)"
   [[ -n "$webui_secret" ]] || fail "WEBUI_SECRET_KEY não encontrada em ${openwebui_env}."
-  printf 'WEBUI_ADMIN_EMAIL=%s\nWEBUI_ADMIN_PASSWORD=%s\nWEBUI_ADMIN_NAME=%s\nWEBUI_SECRET_KEY=%s\n' \
-    "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$OPENWEBUI_ADMIN_NAME" "$webui_secret" >"${openwebui_env}.tmp"
-  chmod 600 "${openwebui_env}.tmp"
-  mv "${openwebui_env}.tmp" "$openwebui_env"
+  write_openwebui_environment \
+    "$ADMIN_EMAIL" "$OPENWEBUI_DESIRED_PASSWORD" "$OPENWEBUI_ADMIN_NAME" "$webui_secret"
 
   ADMIN_PASSWORD=''
   OPENWEBUI_PREVIOUS_PASSWORD=''
@@ -723,6 +821,7 @@ main() {
   ask_memory_budget
   ask_ollama_model
   ask_proxy_access
+  ask_google_drive_integration
   validate_sudo
   keep_sudo_alive
   success "Configuração concluída; iniciando instalação não interativa"

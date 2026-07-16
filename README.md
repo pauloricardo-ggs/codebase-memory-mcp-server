@@ -13,7 +13,10 @@ Depois de instalado, o ambiente oferece:
 - interface visual para explorar os grafos indexados;
 - Open WebUI, Ollama e Docling executados pelo Docker Compose.
 
-## Como funciona
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Como funciona</summary>
 
 O administrador conecta uma conta do GitHub, organiza os repositórios em workspaces e inicia a primeira indexação. Cada workspace recebe automaticamente um token MCP que acompanha todos os repositórios atualmente contidos nele. Usuários MCP individuais continuam disponíveis para acessos mais específicos.
 
@@ -31,7 +34,12 @@ Codebase Memory → índices dos repositórios autorizados
 
 O token limita tanto as ferramentas disponíveis quanto os projetos retornados por `list_projects`.
 
-## Requisitos do servidor
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Requisitos do servidor</summary>
 
 - Debian, Ubuntu ou distribuição compatível com `apt-get`;
 - usuário comum com acesso a `sudo`;
@@ -40,7 +48,12 @@ O token limita tanto as ferramentas disponíveis quanto os projetos retornados p
 
 O instalador configura Docker, Docker Compose, Git e o Codebase Memory MCP. Não execute o instalador diretamente como `root`.
 
-## Instalação no servidor
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Instalação no servidor</summary>
 
 Clone o projeto no diretório em que os dados deverão permanecer:
 
@@ -57,6 +70,9 @@ Durante a instalação, informe:
 - o modelo Ollama que será baixado (`qwen3:14b` por padrão);
 - o e-mail administrativo;
 - uma senha administrativa com pelo menos 6 caracteres.
+- se deseja habilitar a importação pelo Google Drive e, em caso positivo, o OAuth Client ID e a API Key do Google Picker.
+
+Antes de habilitar o Google Drive, siga o guia [Configurar o Google Drive para o Open WebUI](docs/google-drive.md) para criar o projeto, ativar as APIs, configurar o consentimento OAuth e gerar as duas credenciais no Google Cloud Console.
 
 O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers, baixa o modelo escolhido e o `bge-m3`, configura os exemplos do Open WebUI e valida o endpoint MCP. A conta do Open WebUI usa o nome `Admin` e o e-mail informado na instalação. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual. Se o e-mail ou a senha mudar, o instalador autentica com a credencial anterior, atualiza o administrador no banco do Open WebUI e preserva chats, documentos e Knowledge Bases.
 
@@ -76,7 +92,12 @@ As interfaces web usam o e-mail e a senha definidos na instalação. O endpoint 
 
 Se `UI_PORT`, `AGENTGATEWAY_UI_PORT` ou `OPENWEBUI_PORT` forem alterados no `.env`, use as novas portas nos endereços acima.
 
-## Primeiro uso
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Primeiro uso</summary>
 
 1. Acesse `http://<servidor>:8787/admin/`.
 2. Clique em **Conectar GitHub**.
@@ -90,7 +111,12 @@ Se `UI_PORT`, `AGENTGATEWAY_UI_PORT` ou `OPENWEBUI_PORT` forem alterados no `.en
 
 O token do GitHub precisa de leitura de metadados. Para repositórios privados, conceda também leitura de conteúdo. Restrinja o token à organização e aos repositórios necessários.
 
-## Token MCP do workspace
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Token MCP do workspace</summary>
 
 Ao criar um workspace, o painel gera e registra uma credencial MCP própria. No detalhe do workspace é possível exibir, copiar, rotacionar, revogar ou reativar o token.
 
@@ -98,7 +124,12 @@ O acesso é calculado em cada chamada a partir dos repositórios atuais do works
 
 Inclua `data/secrets/mcp-workspace-encryption-key` nos backups. Sem essa chave, tokens restaurados não poderão ser revelados.
 
-## Criando um usuário MCP individual
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Criando um usuário MCP individual</summary>
 
 No painel administrativo:
 
@@ -114,7 +145,12 @@ Não grave tokens no Git, no `README`, em skills, em `AGENTS.md` ou diretamente 
 
 Alterações de acesso individual passam a valer nas chamadas seguintes. Diferentemente do token automático do workspace, um usuário individual mantém uma seleção explícita de repositórios.
 
-## Open WebUI, Ollama e Docling
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Open WebUI, Ollama e Docling</summary>
 
 Os documentos são enviados normalmente pelo Open WebUI. O Open WebUI encaminha PDFs, documentos e imagens ao Docling, que executa OCR, preserva layout e extrai tabelas. Em seguida, o `bge-m3` no Ollama gera os embeddings usados pela Knowledge Base.
 
@@ -131,7 +167,14 @@ O `MCP Admin` usa a credencial Sistema/Playground e, portanto, possui acesso tot
 
 A credencial administrativa e o `WEBUI_SECRET_KEY` ficam em `data/secrets/openwebui.env`, fora do Git. Os dados de Ollama, Docling e Open WebUI persistem em volumes Docker próprios.
 
-## Conectando um cliente MCP
+Quando o Google Drive é habilitado no instalador, o mesmo arquivo secreto recebe `ENABLE_GOOGLE_DRIVE_INTEGRATION`, `GOOGLE_DRIVE_CLIENT_ID` e `GOOGLE_DRIVE_API_KEY`. O `env_file` do container disponibiliza essas variáveis ao Open WebUI. A integração permite selecionar e importar arquivos do Drive; ela não configura sincronização automática.
+
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Conectando um cliente MCP</summary>
 
 O servidor usa o transporte MCP Streamable HTTP no endpoint:
 
@@ -168,7 +211,12 @@ Substitua o IP e a porta pelos valores da sua instalação e reinicie o Codex.
 
 Este repositório inclui uma skill para orientar investigações pelo Codebase Memory em [`docs/skills/company-codebase-memory/`](docs/skills/company-codebase-memory/).
 
-## Permissões MCP
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Permissões MCP</summary>
 
 Tokens individuais são destinados à análise de código. Eles podem consultar somente os repositórios selecionados pelo administrador e não recebem ferramentas administrativas de indexação ou exclusão.
 
@@ -176,7 +224,12 @@ A credencial **Sistema / Playground** é criada automaticamente para validaçõe
 
 No painel do gateway, abra **MCP → Tool Playground** e informe essa credencial no campo **Bearer token** quando precisar testar manualmente o servidor.
 
-## Sincronização e indexação
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Sincronização e indexação</summary>
 
 A primeira indexação é iniciada manualmente pelo botão **Indexar**.
 
@@ -188,7 +241,12 @@ No detalhe do workspace é possível:
 - desativar a sincronização automática;
 - executar uma sincronização imediatamente.
 
-## Configuração
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Configuração</summary>
 
 O instalador gera um `.env` semelhante a:
 
@@ -225,7 +283,12 @@ As opções mais comuns são:
 
 Execute novamente `./install.sh` depois de alterar configurações que exijam a recriação do ambiente.
 
-## Estrutura de dados
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Estrutura de dados</summary>
 
 ```text
 codebase-memory-mcp-server/
@@ -243,7 +306,12 @@ codebase-memory-mcp-server/
 
 Mantenha o clone no mesmo caminho depois da instalação, pois o `.env` contém caminhos absolutos. Se precisar movê-lo, execute novamente `./install.sh` no novo local.
 
-## Segurança
+</details>
+
+--- 
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Segurança</summary>
 
 - use o token do workspace somente onde o acesso a todos os seus repositórios for adequado;
 - use tokens individuais quando for necessário um escopo menor;
@@ -254,3 +322,5 @@ Mantenha o clone no mesmo caminho depois da instalação, pois o `.env` contém 
 - prefira uma GitHub App ou token fine-grained com permissões mínimas.
 
 Em produção, publique o serviço atrás da infraestrutura HTTPS da organização e restrinja o acesso à rede corporativa ou VPN.
+
+</details>

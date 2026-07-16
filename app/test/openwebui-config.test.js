@@ -42,6 +42,13 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   const install = await readFile(path.join(root, 'install.sh'), 'utf8');
   assert.match(install, /OLLAMA_CHAT_MODEL='qwen3:14b'/);
   assert.match(install, /ask_ollama_model/);
+  assert.match(install, /ask_google_drive_integration/);
+  assert.match(install, /Deseja habilitar o Google Drive/);
+  assert.match(install, /OAuth Client ID do Google/);
+  assert.match(install, /API Key do Google Picker/);
+  assert.match(install, /ENABLE_GOOGLE_DRIVE_INTEGRATION/);
+  assert.match(install, /GOOGLE_DRIVE_CLIENT_ID/);
+  assert.match(install, /GOOGLE_DRIVE_API_KEY/);
   assert.match(install, /E-mail administrativo/);
   assert.match(install, /mínimo de 6 caracteres/);
   assert.match(install, /OPENWEBUI_ADMIN_NAME='Admin'/);
@@ -89,7 +96,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
     await writeFile(path.join(temporaryRoot, '.env'), `OPENWEBUI_PORT=${server.address().port}\n`);
     await writeFile(
       path.join(temporaryRoot, 'data/secrets/openwebui.env'),
-      'WEBUI_ADMIN_EMAIL=admin@local.invalid\nWEBUI_ADMIN_PASSWORD=senha-antiga\nWEBUI_ADMIN_NAME=admin@local.invalid\nWEBUI_SECRET_KEY=segredo-preservado\n'
+      'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=admin@local.invalid\nWEBUI_ADMIN_PASSWORD=senha-antiga\nWEBUI_ADMIN_NAME=admin@local.invalid\nWEBUI_SECRET_KEY=segredo-preservado\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\n'
     );
 
     await execFileAsync('bash', ['-c', `
@@ -98,6 +105,9 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
       OPENWEBUI_PREVIOUS_EMAIL="$TEST_OLD_EMAIL"
       OPENWEBUI_PREVIOUS_PASSWORD="$TEST_OLD_PASSWORD"
       OPENWEBUI_DESIRED_PASSWORD="$TEST_NEW_PASSWORD"
+      ENABLE_GOOGLE_DRIVE_INTEGRATION=true
+      GOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com
+      GOOGLE_DRIVE_API_KEY=api-key-preservada
       migrate_openwebui_admin_command
     `, 'test', path.join(temporaryRoot, 'install.sh')], {
       env: {
@@ -126,10 +136,37 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
     });
     assert.equal(
       await readFile(path.join(temporaryRoot, 'data/secrets/openwebui.env'), 'utf8'),
-      'WEBUI_ADMIN_EMAIL=novo@example.com\nWEBUI_ADMIN_PASSWORD=senha-nova\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=segredo-preservado\n'
+      'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=novo@example.com\nWEBUI_ADMIN_PASSWORD=senha-nova\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=segredo-preservado\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\n'
     );
   } finally {
     await new Promise(resolve => server.close(resolve));
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('configuração desabilitada não mantém credenciais do Google Drive no container', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-openwebui-gdrive-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await mkdir(path.join(temporaryRoot, 'data/secrets'), { recursive: true });
+    await writeFile(
+      path.join(temporaryRoot, 'data/secrets/openwebui.env'),
+      'CUSTOM_OPENWEBUI_SETTING=preservar\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente-antigo.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-antiga\n'
+    );
+
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      ENABLE_GOOGLE_DRIVE_INTEGRATION=false
+      GOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com
+      GOOGLE_DRIVE_API_KEY=api-key
+      write_openwebui_environment admin@example.com senha-secreta Admin webui-secret
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+
+    assert.equal(
+      await readFile(path.join(temporaryRoot, 'data/secrets/openwebui.env'), 'utf8'),
+      'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=admin@example.com\nWEBUI_ADMIN_PASSWORD=senha-secreta\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=webui-secret\nENABLE_GOOGLE_DRIVE_INTEGRATION=false\n'
+    );
+  } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
