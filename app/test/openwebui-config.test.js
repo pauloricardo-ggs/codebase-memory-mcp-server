@@ -22,11 +22,39 @@ test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker permanente'
   assert.match(compose, /\.\/data\/secrets:\/run\/cbm-secrets:ro/);
   assert.match(compose, /ollama-data:/);
   assert.match(compose, /openwebui-data:/);
+  assert.match(compose, /context: \.\/openwebui/);
+  assert.match(compose, /image: codebase-memory-open-webui:0\.10\.2-google-drive-config/);
   assert.match(compose, /^  knowledge-sync:/m);
   assert.doesNotMatch(compose, /profiles: \["google-drive"\]/);
   assert.match(compose, /KNOWLEDGE_SYNC_ENABLED: "true"/);
   assert.match(compose, /GOOGLE_APPLICATION_CREDENTIALS: \/run\/secrets\/google-drive-service-account.json/);
   assert.match(compose, /KNOWLEDGE_SYNC_URL: http:\/\/knowledge-sync:3002/);
+});
+
+test('imagem derivada lê as credenciais persistentes do Picker em tempo de execução', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-openwebui-patch-'));
+  try {
+    const mainFile = path.join(temporaryRoot, 'main.py');
+    await writeFile(mainFile, `keys = (
+        'google_drive.enable',
+        'onedrive.enable',
+)
+response = {
+                'google_drive': {
+                    'client_id': GOOGLE_DRIVE_CLIENT_ID,
+                    'api_key': GOOGLE_DRIVE_API_KEY,
+                },
+}
+`);
+    await execFileAsync('python3', [path.join(root, 'openwebui/patch-google-drive-runtime.py'), mainFile]);
+    const patched = await readFile(mainFile, 'utf8');
+    assert.match(patched, /'google_drive\.client_id'/);
+    assert.match(patched, /'google_drive\.api_key'/);
+    assert.match(patched, /config\.get\('google_drive\.client_id'\)/);
+    assert.match(patched, /config\.get\('google_drive\.api_key'\)/);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test('presets de exemplo selecionam o padrão e carregam parâmetros e integrações esperados', async () => {
@@ -57,6 +85,11 @@ test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF intern
   assert.match(browser, /drive-credentials-file/);
   assert.match(browser, /save-drive-credentials/);
   assert.match(browser, /test-drive-credentials/);
+  assert.match(browser, /drive-picker-client-id/);
+  assert.match(browser, /drive-picker-api-key/);
+  assert.match(browser, /save-drive-picker/);
+  assert.match(browser, /remove-drive-picker/);
+  assert.match(browser, /\/api\/knowledge-sync\/picker-config/);
   assert.match(browser, /refreshKnowledgeSyncRows/);
   assert.doesNotMatch(browser, /setInterval\(\(\) => \{ if \(currentView === 'knowledge-sync'\) renderKnowledgeSync/);
   assert.match(styles, /knowledge-sync-identity \.workspace-icon \{[^}]*border-radius:50%/);

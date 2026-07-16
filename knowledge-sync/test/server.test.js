@@ -42,6 +42,11 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
   let fileContent = 'primeira versão';
   let uploadSequence = 0;
   let directorySequence = 0;
+  let pickerConfig = {
+    'google_drive.enable': false,
+    'google_drive.client_id': '',
+    'google_drive.api_key': ''
+  };
 
   const googleServer = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://google.test');
@@ -79,6 +84,21 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     response.setHeader('content-type', 'application/json');
     if (request.url === '/api/v1/auths/signin') {
       response.end(JSON.stringify({ token: 'openwebui-token' }));
+      return;
+    }
+    if (request.url === '/api/v1/configs/import') {
+      pickerConfig = { ...pickerConfig, ...JSON.parse(raw.toString('utf8')).config };
+      response.end(JSON.stringify(pickerConfig));
+      return;
+    }
+    if (request.url === '/api/config') {
+      response.end(JSON.stringify({
+        features: { enable_google_drive_integration: pickerConfig['google_drive.enable'] },
+        google_drive: {
+          client_id: pickerConfig['google_drive.client_id'],
+          api_key: pickerConfig['google_drive.api_key']
+        }
+      }));
       return;
     }
     if (request.url === '/api/v1/knowledge/?page=1') {
@@ -141,11 +161,35 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
 
   try {
     await waitFor(`${workerUrl}/health`);
+    let response = await fetch(`${workerUrl}/api/picker-config`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        clientId: 'picker.apps.googleusercontent.com',
+        apiKey: 'AIza12345678901234567890'
+      })
+    });
+    assert.equal(response.status, 200, await response.text());
+    let picker = await fetch(`${workerUrl}/api/picker-config`, { headers }).then(value => value.json());
+    assert.deepEqual(picker, {
+      enabled: true,
+      configured: true,
+      clientId: 'picker.apps.googleusercontent.com',
+      apiKeyConfigured: true,
+      apiKeySuffix: '7890'
+    });
+    assert.equal('apiKey' in picker, false);
+
+    response = await fetch(`${workerUrl}/api/picker-config`, { method: 'DELETE', headers });
+    assert.equal(response.status, 200);
+    picker = await response.json();
+    assert.equal(picker.enabled, false);
+
     let status = await fetch(`${workerUrl}/api/status`, { headers }).then(value => value.json());
     assert.equal(status.configured, false);
 
     await writeFile(credentialsFile, JSON.stringify(credentials));
-    let response = await fetch(`${workerUrl}/api/credentials/test`, { method: 'POST', headers });
+    response = await fetch(`${workerUrl}/api/credentials/test`, { method: 'POST', headers });
     assert.equal(response.status, 200, await response.text());
     status = await fetch(`${workerUrl}/api/status`, { headers }).then(value => value.json());
     assert.equal(status.configured, true);

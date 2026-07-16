@@ -71,9 +71,8 @@ Durante a instalação, informe:
 - o modelo Ollama que será baixado (`qwen3:14b` por padrão);
 - o e-mail administrativo;
 - uma senha administrativa com pelo menos 6 caracteres.
-- se deseja habilitar o Google Drive e, em caso positivo, o OAuth Client ID, a API Key do Google Picker e o JSON de uma Service Account para sincronização automática.
 
-Antes de habilitar o Google Drive, siga o guia [Configurar o Google Drive para o Open WebUI](docs/google-drive.md) para criar o projeto, ativar as APIs, configurar o consentimento OAuth e gerar as credenciais no Google Cloud Console.
+O Google Drive é configurado depois da instalação em **Bases e Drive**. Siga o guia [Configurar o Google Drive para o Open WebUI](docs/google-drive.md) para criar o projeto, ativar as APIs, configurar o Picker e enviar a Service Account pelo painel.
 
 O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers, baixa o modelo escolhido e o `bge-m3`, configura os exemplos do Open WebUI e valida o endpoint MCP. A conta do Open WebUI usa o nome `Admin` e o e-mail informado na instalação. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual. Se o e-mail ou a senha mudar, o instalador autentica com a credencial anterior, atualiza o administrador no banco do Open WebUI e preserva chats, documentos e Knowledge Bases.
 
@@ -168,7 +167,7 @@ O `MCP Admin` usa a credencial Sistema/Playground e, portanto, possui acesso tot
 
 A credencial administrativa e o `WEBUI_SECRET_KEY` ficam em `data/secrets/openwebui.env`, fora do Git. Os dados de Ollama, Docling e Open WebUI persistem em volumes Docker próprios.
 
-O instalador sempre prepara o container leve `knowledge-sync`, mas não solicita credenciais do Google Drive. Sem uma conta de serviço e sem vínculos, ele permanece ocioso. Toda a configuração da sincronização é feita em **Bases e Drive** no painel administrativo: upload ou colagem do JSON, teste de conexão, e-mail para compartilhamento, pastas, intervalo, execução manual, pausa, status e histórico.
+O instalador sempre prepara o container leve `knowledge-sync`, mas não solicita credenciais do Google Drive. Sem uma conta de serviço e sem vínculos, ele permanece ocioso. Toda a configuração é feita em **Bases e Drive**: OAuth Client ID e API Key ativam o Picker nativo no Open WebUI; upload ou colagem do JSON habilita a sincronização automática. O painel também oferece teste de conexão, e-mail para compartilhamento, pastas, intervalo, execução manual, pausa, status e histórico.
 
 Cada Knowledge Base pode ser vinculada a uma ou mais pastas. O worker envia somente as mudanças para a base escolhida; extração e embeddings continuam sendo executados pelo Open WebUI, Docling e Ollama. Consulte [Configurar o Google Drive](docs/google-drive.md) para criar a Service Account e concluir a configuração pelo navegador.
 

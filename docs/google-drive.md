@@ -1,8 +1,8 @@
 # Configurar o Google Drive para sincronização
 
-Este guia prepara um projeto no Google Cloud e conecta pastas do Drive a Knowledge Bases pelo painel administrativo. A instalação não solicita credenciais: o arquivo JSON da Service Account é enviado posteriormente pelo navegador.
+Este guia prepara um projeto no Google Cloud para dois recursos configurados pelo painel administrativo: o Picker manual nativo do Open WebUI e a sincronização automática de pastas com Knowledge Bases. A instalação não solicita credenciais.
 
-OAuth Client ID e API Key do Google Picker não são necessários para a sincronização automática. Eles pertencem ao seletor manual nativo do Open WebUI e são tratados separadamente na seção opcional deste guia.
+O Picker usa OAuth Client ID e API Key. A sincronização usa o JSON de uma Service Account. Você pode configurar somente um dos recursos ou ambos.
 
 ---
 
@@ -24,8 +24,7 @@ OAuth Client ID e API Key do Google Picker não são necessários para a sincron
 2. Use o seletor no topo para criar ou escolher um projeto.
 3. Abra **APIs e serviços → Biblioteca**.
 4. Procure por **Google Drive API**, abra o resultado e clique em **Ativar**.
-
-Para a sincronização automática, somente a Google Drive API é necessária. Ative a Google Picker API apenas se também for usar o seletor manual opcional.
+5. Para usar o Picker manual, ative também **Google Picker API**.
 
 </details>
 
@@ -58,7 +57,7 @@ Execute normalmente:
 
 O instalador não faz perguntas sobre Google Drive. Ele gera somente o token interno entre o painel e o worker, constrói o serviço `knowledge-sync` e o inicia junto aos demais containers.
 
-Sem credencial, o worker responde ao painel, mas não consulta o Google nem executa agendamentos. Não é necessário reinstalar ou reiniciar containers depois de enviar ou substituir o JSON.
+Sem credencial, o worker responde ao painel, mas não consulta o Google nem executa agendamentos. Não é necessário reinstalar ou reiniciar containers depois de configurar o Picker ou enviar o JSON.
 
 </details>
 
@@ -118,31 +117,20 @@ O fluxo é unidirecional: alterações feitas no Drive chegam ao Open WebUI. Alt
 ---
 
 <details>
-<summary style="font-size: 1.5em; font-weight: bold;">Opcional: Picker manual nativo do Open WebUI</summary>
+<summary style="font-size: 1.5em; font-weight: bold;">Configurar o Picker nativo pelo painel</summary>
 
 O Picker permite que usuários importem arquivos manualmente pelo menu de anexos. Ele é independente da sincronização e exige OAuth Client ID e API Key.
-
-Na versão `v0.10.2`, o toggle é persistente, mas o Client ID e a API Key são lidos somente na inicialização. Eles não são aplicados em **Bases e Drive**, pois recriar containers pelo navegador exigiria expor controle privilegiado do Docker ao painel.
-
-Se quiser habilitar esse recurso opcional:
 
 1. Ative **Google Picker API** no mesmo projeto.
 2. Configure a tela de consentimento em **Google Auth Platform** e adicione os escopos `drive.readonly` e `drive.file`.
 3. Crie um OAuth Client do tipo **Web application** e cadastre a origem usada para acessar o Open WebUI.
 4. Crie uma API Key restrita ao site e às APIs Google Drive e Google Picker.
-5. Adicione a `data/secrets/openwebui.env`:
+5. Abra `http://<servidor>:8787/admin/` e entre em **Bases e Drive**.
+6. No card **Integração do Open WebUI**, clique em **Configurar Picker**.
+7. Informe o OAuth Client ID e a API Key e clique em **Salvar e ativar**.
+8. Recarregue abas do Open WebUI que já estavam abertas.
 
-```dotenv
-ENABLE_GOOGLE_DRIVE_INTEGRATION=true
-GOOGLE_DRIVE_CLIENT_ID=seu-client-id.apps.googleusercontent.com
-GOOGLE_DRIVE_API_KEY=sua-api-key
-```
-
-6. Recrie apenas o Open WebUI:
-
-```bash
-docker compose up -d --force-recreate open-webui
-```
+O painel persiste as credenciais no banco do Open WebUI e ativa `google_drive.enable` na mesma operação. A API Key não é devolvida pelo painel depois de salva. **Desativar** remove as duas credenciais e desliga a integração.
 
 Não informe nem armazene o OAuth Client Secret; o Picker não o utiliza.
 
@@ -161,7 +149,7 @@ Não informe nem armazene o OAuth Client Secret; o Picker não o utiliza.
 | Worker indisponível | Consulte `docker compose ps knowledge-sync` e `docker compose logs knowledge-sync`. Ele é iniciado automaticamente pela instalação. |
 | Sincronização falha ao autenticar no Open WebUI | Execute novamente o instalador para recriar o worker com a credencial administrativa atual. |
 | Origem vazia | O worker preserva os arquivos existentes quando uma origem previamente preenchida retorna vazia. Verifique permissões e disponibilidade do Drive. |
-| Picker manual não aparece | Configure as variáveis da seção opcional e recrie o serviço `open-webui`. |
+| Picker manual não aparece | Confirme no painel que o card mostra **Ativado no Open WebUI** e recarregue a aba do Open WebUI. |
 
 </details>
 

@@ -176,7 +176,9 @@ services:
       - docling-data:/app/data
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.10.2
+    build:
+      context: ./openwebui
+    image: codebase-memory-open-webui:0.10.2-google-drive-config
     restart: unless-stopped
     depends_on:
       ollama:

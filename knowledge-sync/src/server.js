@@ -272,6 +272,61 @@ async function openwebui(pathname, options = {}, retry = true) {
   return response;
 }
 
+async function getOpenWebuiPublicConfig(retry = true) {
+  const token = openwebuiToken || await signInOpenWebui();
+  const response = await fetch(`${OPENWEBUI_URL}/api/config`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(30_000)
+  });
+  if (response.status === 401 && retry) {
+    openwebuiToken = null;
+    return getOpenWebuiPublicConfig(false);
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`Open WebUI respondeu HTTP ${response.status} ao consultar a integração do Drive.`);
+  return payload;
+}
+
+function publicPickerConfig(config) {
+  const clientId = String(config?.google_drive?.client_id || '');
+  const apiKey = String(config?.google_drive?.api_key || '');
+  const enabled = config?.features?.enable_google_drive_integration === true;
+  return {
+    enabled,
+    configured: enabled && Boolean(clientId) && Boolean(apiKey),
+    clientId: clientId || null,
+    apiKeyConfigured: Boolean(apiKey),
+    apiKeySuffix: apiKey ? apiKey.slice(-4) : null
+  };
+}
+
+async function setPickerConfig(clientId, apiKey, enabled) {
+  await openwebui('/configs/import', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      config: {
+        'google_drive.enable': enabled,
+        'google_drive.client_id': clientId,
+        'google_drive.api_key': apiKey
+      }
+    })
+  });
+  return publicPickerConfig(await getOpenWebuiPublicConfig());
+}
+
+function validatePickerConfig(input) {
+  const clientId = String(input.clientId || '').trim();
+  const apiKey = String(input.apiKey || '').trim();
+  if (!/^[^\s=]+\.apps\.googleusercontent\.com$/.test(clientId)) {
+    throw new Error('Informe um OAuth Client ID válido, terminado em .apps.googleusercontent.com.');
+  }
+  if (apiKey.length < 20 || /[\s=]/.test(apiKey)) {
+    throw new Error('Informe uma API Key válida do Google Picker, sem espaços.');
+  }
+  return { clientId, apiKey };
+}
+
 async function listKnowledgeBases() {
   const items = [];
   let page = 1;
@@ -460,6 +515,23 @@ async function route(request, response, url) {
       projectId: credentials.project_id || null,
       testedAt: new Date().toISOString()
     });
+  }
+  if (url.pathname === '/api/picker-config') {
+    if (request.method === 'GET') {
+      return json(response, 200, publicPickerConfig(await getOpenWebuiPublicConfig()));
+    }
+    if (request.method === 'PUT') {
+      const { clientId, apiKey } = validatePickerConfig(await requestBody(request));
+      const picker = await setPickerConfig(clientId, apiKey, true);
+      if (!picker.configured) throw new Error('O Open WebUI não confirmou a ativação do Google Drive.');
+      return json(response, 200, picker);
+    }
+    if (request.method === 'DELETE') {
+      const picker = await setPickerConfig('', '', false);
+      if (picker.enabled) throw new Error('O Open WebUI não confirmou a desativação do Google Drive.');
+      return json(response, 200, picker);
+    }
+    return json(response, 405, { error: 'Método não permitido.' });
   }
   if (request.method === 'GET' && url.pathname === '/api/knowledge-bases') {
     return json(response, 200, { knowledgeBases: await listKnowledgeBases() });

@@ -13,6 +13,7 @@ let knowledgeSyncTargets = [];
 let knowledgeSyncFolders = [];
 let selectedDriveFolders = new Map();
 let knowledgeSyncDriveConfigured = false;
+let knowledgeSyncPickerConfig = null;
 let knowledgeSyncRefreshInFlight = false;
 let publicConfig = {};
 
@@ -167,24 +168,35 @@ async function renderKnowledgeSync() {
   setNavigation('knowledge-sync');
   setHeader('Bases e Google Drive', 'Administração / Knowledge Bases');
   content.innerHTML = '<div class="loading"><i></i> Consultando bases e worker…</div>';
-  const [status, baseData, targetData] = await Promise.all([
+  const [status, picker, baseData, targetData] = await Promise.all([
     api('/api/knowledge-sync/status'),
+    api('/api/knowledge-sync/picker-config'),
     api('/api/knowledge-sync/knowledge-bases'),
     api('/api/knowledge-sync/targets')
   ]);
   knowledgeSyncDriveConfigured = status.configured;
+  knowledgeSyncPickerConfig = picker;
   knowledgeSyncTargets = targetData.targets;
   const linked = new Map(knowledgeSyncTargets.map(target => [target.knowledgeBaseId, target]));
   const credentialState = status.configured
     ? `<span class="status active">Configurada</span><p>Compartilhe as pastas com <code>${escapeHtml(status.serviceAccountEmail)}</code>.</p><div class="repo-actions"><button class="button small" data-action="copy-drive-email" data-email="${escapeHtml(status.serviceAccountEmail)}">Copiar e-mail</button><button class="button small" data-action="test-drive-credentials">Testar conexão</button><button class="button small" data-action="configure-drive-credentials">Substituir JSON</button><button class="button small danger" data-action="remove-drive-credentials">Remover</button></div>`
     : `<span class="status revoked">Não configurada</span><p>Envie o JSON da Service Account para habilitar a seleção de pastas e as sincronizações. Nenhuma credencial é solicitada durante a instalação.</p><button class="button small primary" data-action="configure-drive-credentials">Configurar Google Drive</button>`;
-  content.innerHTML = `<article class="drive-config-card"><div><small>CONTA DE SERVIÇO</small><h2>Credenciais do Google Drive</h2>${credentialState}${status.credentialsError ? `<p class="sync-error">${escapeHtml(status.credentialsError)}</p>` : ''}</div><div class="drive-config-meta"><span><small>Projeto</small><strong>${escapeHtml(status.projectId || '—')}</strong></span><span><small>Vínculos</small><strong data-knowledge-sync-count>${knowledgeSyncTargets.length}</strong></span></div></article>
+  const pickerState = picker.configured
+    ? `<span class="status active">Ativado no Open WebUI</span><p>O Picker manual está disponível no menu de anexos. Recarregue abas do Open WebUI que já estavam abertas.</p><div class="repo-actions"><button class="button small" data-action="configure-drive-picker">Substituir credenciais</button><button class="button small danger" data-action="remove-drive-picker">Desativar</button></div>`
+    : `<span class="status revoked">Desativado</span><p>Informe o OAuth Client ID e a API Key para ativar o Picker nativo do Google Drive no Open WebUI.</p><button class="button small primary" data-action="configure-drive-picker">Configurar Picker</button>`;
+  content.innerHTML = `<article class="drive-config-card"><div><small>PICKER NATIVO</small><h2>Integração do Open WebUI</h2>${pickerState}</div><div class="drive-config-meta"><span><small>OAuth Client ID</small><strong title="${escapeHtml(picker.clientId || '')}">${escapeHtml(picker.clientId || '—')}</strong></span><span><small>API Key</small><strong>${picker.apiKeyConfigured ? `••••${escapeHtml(picker.apiKeySuffix)}` : '—'}</strong></span></div></article>
+    <article class="drive-config-card"><div><small>CONTA DE SERVIÇO</small><h2>Sincronização automática</h2>${credentialState}${status.credentialsError ? `<p class="sync-error">${escapeHtml(status.credentialsError)}</p>` : ''}</div><div class="drive-config-meta"><span><small>Projeto</small><strong>${escapeHtml(status.projectId || '—')}</strong></span><span><small>Vínculos</small><strong data-knowledge-sync-count>${knowledgeSyncTargets.length}</strong></span></div></article>
     <div class="access-banner ${status.configured ? '' : 'open'}"><div><strong>${status.configured ? 'Sincronização automática disponível' : 'Worker instalado e aguardando configuração'}</strong><p>${status.configured ? 'Cada vínculo envia arquivos somente para a Knowledge Base selecionada.' : 'O serviço permanece ocioso até uma Service Account ser cadastrada e uma pasta ser vinculada.'}</p></div><code data-knowledge-sync-count-label>${knowledgeSyncTargets.length} vínculo${knowledgeSyncTargets.length === 1 ? '' : 's'}</code></div>
     <div class="toolbar"><span class="subtle">${baseData.knowledgeBases.length} Knowledge Base${baseData.knowledgeBases.length === 1 ? '' : 's'} encontrada${baseData.knowledgeBases.length === 1 ? '' : 's'}</span></div>
     ${baseData.knowledgeBases.length ? `<div class="knowledge-sync-list">${baseData.knowledgeBases.map(base => knowledgeSyncRow(base, linked.get(base.id), status.configured)).join('')}</div>` : '<div class="empty"><div><div class="empty-icon">KB</div><h2>Nenhuma Knowledge Base encontrada</h2><p>Crie uma base no Open WebUI antes de vincular pastas do Google Drive.</p></div></div>'}`;
   $$('[data-knowledge-base-id]', content).forEach(row => {
     row.dataset.targetSignature = knowledgeSyncTargetSignature(linked.get(row.dataset.knowledgeBaseId));
   });
+}
+
+function drivePickerModal() {
+  const currentClientId = knowledgeSyncPickerConfig?.clientId || '';
+  openModal(`<h2 class="modal-title">Configurar Picker do Google Drive</h2><p class="modal-copy">Ao salvar as duas credenciais, a integração será ativada imediatamente no Open WebUI. O Client Secret não é utilizado.</p><div class="field"><label for="drive-picker-client-id">OAuth Client ID</label><input id="drive-picker-client-id" value="${escapeHtml(currentClientId)}" autocomplete="off" placeholder="cliente.apps.googleusercontent.com"></div><div class="field"><label for="drive-picker-api-key">API Key do Google Picker</label><input id="drive-picker-api-key" type="password" autocomplete="new-password" placeholder="${knowledgeSyncPickerConfig?.apiKeyConfigured ? 'Informe novamente para substituir as credenciais' : 'AIza…'}"><p class="field-help">A chave é persistida no Open WebUI e não será exibida novamente pelo painel.</p></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-drive-picker">Salvar e ativar</button></div>`);
 }
 
 async function refreshKnowledgeSyncRows() {
@@ -492,6 +504,17 @@ document.addEventListener('click', async event => {
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
     if (action === 'configure-knowledge-sync') return knowledgeSyncModal(target.dataset.kb);
+    if (action === 'configure-drive-picker') return drivePickerModal();
+    if (action === 'save-drive-picker') {
+      target.disabled = true;
+      await api('/api/knowledge-sync/picker-config', { method:'PUT', body:JSON.stringify({ clientId:$('#drive-picker-client-id').value, apiKey:$('#drive-picker-api-key').value }) });
+      closeModal(); toast('Picker do Google Drive ativado no Open WebUI.'); return renderKnowledgeSync();
+    }
+    if (action === 'remove-drive-picker') {
+      if (!confirm('Desativar o Picker do Google Drive no Open WebUI e remover o Client ID e a API Key salvos?')) return;
+      await api('/api/knowledge-sync/picker-config', { method:'DELETE' });
+      toast('Picker do Google Drive desativado.'); return renderKnowledgeSync();
+    }
     if (action === 'configure-drive-credentials') return driveCredentialsModal();
     if (action === 'save-drive-credentials') {
       target.disabled = true;
