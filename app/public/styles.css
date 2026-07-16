@@ -53,6 +53,8 @@ dialog { width:min(610px,calc(100% - 28px)); padding:0; color:var(--text); backg
 .knowledge-sync-row > * { min-width:0; }
 .knowledge-sync-row .knowledge-sync-actions { grid-column:1 / -1; justify-content:flex-start; flex-wrap:wrap; padding-top:12px; border-top:1px solid var(--line); }
 .knowledge-sync-identity .workspace-icon { flex:0 0 39px; border-radius:50%; }
+.knowledge-sync-identity > div { width:100%; min-width:0; overflow:hidden; }
+.knowledge-sync-identity small { display:-webkit-box; white-space:normal; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
 .drive-config-card > div:first-child { min-width:0; }
 @media (max-width:1150px) { .repo-row { grid-template-columns:minmax(0,1fr) auto; gap:17px; }.repo-title,.repo-actions { grid-column:1 / -1; }.repo-actions { justify-content:flex-start; flex-wrap:wrap; }.repo-status { justify-items:end; } }
 @media (max-width:1250px) { .mcp-user-row { grid-template-columns:minmax(0,1fr) auto auto; }.mcp-user-identity,.mcp-user-row .repo-actions { grid-column:1 / -1; }.mcp-user-row .repo-actions { justify-content:flex-start; flex-wrap:wrap; } }

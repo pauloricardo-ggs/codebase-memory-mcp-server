@@ -93,6 +93,8 @@ test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF intern
   assert.match(browser, /refreshKnowledgeSyncRows/);
   assert.doesNotMatch(browser, /setInterval\(\(\) => \{ if \(currentView === 'knowledge-sync'\) renderKnowledgeSync/);
   assert.match(styles, /knowledge-sync-identity \.workspace-icon \{[^}]*border-radius:50%/);
+  assert.match(styles, /knowledge-sync-identity > div \{[^}]*min-width:0/);
+  assert.match(styles, /knowledge-sync-identity small \{[^}]*overflow-wrap:anywhere/);
   assert.match(styles, /knowledge-sync-actions \{[^}]*grid-column:1 \/ -1/);
   assert.match(server, /url\.pathname\.startsWith\('\/api\/knowledge-sync'\)/);
   assert.match(server, /KNOWLEDGE_SYNC_TOKEN_FILE/);
