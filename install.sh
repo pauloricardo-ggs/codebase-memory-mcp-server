@@ -10,6 +10,7 @@ DATA_DIR="${BASE_DIR}/data"
 PROXY_SECRETS_DIR="${DATA_DIR}/secrets/proxy"
 AGENTGATEWAY_DATA_DIR="${DATA_DIR}/agentgateway"
 ENV_FILE="${BASE_DIR}/.env"
+GPU_COMPOSE_FILE="${BASE_DIR}/compose.gpu.yaml"
 CBM_BIN="${HOME}/.local/bin/codebase-memory-mcp"
 CBM_VERSION="v0.8.1"
 INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/${CBM_VERSION}/install.sh"
@@ -24,6 +25,8 @@ OPENWEBUI_PREVIOUS_NAME=''
 OPENWEBUI_PREVIOUS_PASSWORD=''
 OPENWEBUI_DESIRED_PASSWORD=''
 OLLAMA_CHAT_MODEL='qwen3:14b'
+OLLAMA_GPU_MODE='cpu'
+OLLAMA_GPU_DEVICE_IDS=''
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
@@ -158,7 +161,7 @@ validate_system_clock() {
 install_dependencies() {
   validate_system_clock
   run_step "Atualizando a lista de pacotes" sudo apt-get update
-  run_step "Instalando dependências do sistema" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y ca-certificates curl git jq openssh-client openssl util-linux docker.io
+  run_step "Instalando dependências do sistema" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y ca-certificates curl git gnupg jq openssh-client openssl util-linux docker.io
 
   if ! docker compose version >/dev/null 2>&1 && ! sudo docker compose version >/dev/null 2>&1; then
     if apt-cache show docker-compose-v2 >/dev/null 2>&1; then
@@ -176,6 +179,26 @@ install_dependencies() {
   if ! sudo docker info >/dev/null 2>&1; then
     run_step "Iniciando o serviço do Docker" sudo systemctl enable --now docker
   fi
+}
+
+configure_nvidia_runtime_command() {
+  [[ "$OLLAMA_GPU_MODE" != cpu ]] || return 0
+  command -v nvidia-smi >/dev/null 2>&1 || fail 'A GPU foi habilitada, mas o driver NVIDIA não está disponível.'
+  nvidia-smi -L >/dev/null || fail 'A GPU foi habilitada, mas o driver NVIDIA não respondeu.'
+
+  if ! command -v nvidia-ctk >/dev/null 2>&1; then
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+      | sudo gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+      | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+    sudo apt-get update
+    sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y nvidia-container-toolkit
+  fi
+
+  sudo nvidia-ctk runtime configure --runtime=docker
+  sudo systemctl restart docker
+  sudo docker info >/dev/null
 }
 
 ask_memory_budget() {
@@ -241,6 +264,106 @@ ask_ollama_model() {
     esac
   done
   success "Modelo selecionado: ${OLLAMA_CHAT_MODEL}"
+}
+
+ask_ollama_gpu() {
+  local existing_mode existing_devices existing_indices='' choice default_choice record index uuid name memory selection token selected_ids='' selected_uuid position
+  local -a gpu_records=() requested_indices=() gpu_indices=() gpu_uuids=()
+
+  existing_mode="$(read_existing_environment_value OLLAMA_GPU_MODE)"
+  existing_devices="$(read_existing_environment_value OLLAMA_GPU_DEVICE_IDS)"
+  OLLAMA_GPU_MODE='cpu'
+  OLLAMA_GPU_DEVICE_IDS=''
+
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    info 'Nenhuma GPU NVIDIA foi detectada; o Ollama usará CPU.'
+    return
+  fi
+  while IFS= read -r record; do
+    [[ -z "$record" ]] || gpu_records+=("$record")
+  done < <(nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv,noheader,nounits 2>/dev/null || true)
+  if (( ${#gpu_records[@]} == 0 )); then
+    warn 'O nvidia-smi não encontrou GPUs utilizáveis; o Ollama usará CPU.'
+    return
+  fi
+
+  printf "\n${COLOR_BOLD}Aceleração do Ollama${COLOR_RESET}\n"
+  printf 'GPUs NVIDIA detectadas:\n\n'
+  for record in "${gpu_records[@]}"; do
+    IFS=',' read -r index uuid name memory <<<"$record"
+    index="${index//[[:space:]]/}"
+    uuid="${uuid#${uuid%%[![:space:]]*}}"; uuid="${uuid%${uuid##*[![:space:]]}}"
+    name="${name#${name%%[![:space:]]*}}"; name="${name%${name##*[![:space:]]}}"
+    memory="${memory//[[:space:]]/}"
+    gpu_indices+=("$index")
+    gpu_uuids+=("$uuid")
+    if [[ ",${existing_devices}," == *",${uuid},"* ]]; then
+      existing_indices="${existing_indices:+${existing_indices},}${index}"
+    fi
+    printf '  GPU %s — %s — %s MiB — %s\n' "$index" "$name" "$memory" "$uuid"
+  done
+  printf '\n  1) Usar todas as GPUs\n'
+  printf '  2) Selecionar GPUs\n'
+  printf '  3) Usar somente CPU\n\n'
+
+  case "$existing_mode" in
+    all) default_choice=1 ;;
+    selected) default_choice=2 ;;
+    *) default_choice=3 ;;
+  esac
+  while true; do
+    read -r -p "Escolha [1-3, atual: ${default_choice}]: " choice
+    case "${choice:-$default_choice}" in
+      1)
+        OLLAMA_GPU_MODE='all'
+        OLLAMA_GPU_DEVICE_IDS=''
+        break
+        ;;
+      2)
+        read -r -p "Informe os índices separados por vírgula${existing_indices:+ [atual: ${existing_indices}]}: " selection
+        selection="${selection:-$existing_indices}"
+        selected_ids=''
+        IFS=',' read -ra requested_indices <<<"$selection"
+        for token in "${requested_indices[@]}"; do
+          token="${token//[[:space:]]/}"
+          selected_uuid=''
+          if [[ "$token" =~ ^[0-9]+$ ]]; then
+            for position in "${!gpu_indices[@]}"; do
+              if [[ "${gpu_indices[$position]}" == "$token" ]]; then
+                selected_uuid="${gpu_uuids[$position]}"
+                break
+              fi
+            done
+          fi
+          if [[ -z "$selected_uuid" ]]; then
+            selected_ids=''
+            break
+          fi
+          if [[ ",${selected_ids}," != *",${selected_uuid},"* ]]; then
+            selected_ids="${selected_ids:+${selected_ids},}${selected_uuid}"
+          fi
+        done
+        if [[ -n "$selected_ids" ]]; then
+          OLLAMA_GPU_MODE='selected'
+          OLLAMA_GPU_DEVICE_IDS="$selected_ids"
+          break
+        fi
+        warn 'Seleção inválida. Use somente os índices exibidos, separados por vírgula.'
+        ;;
+      3)
+        OLLAMA_GPU_MODE='cpu'
+        OLLAMA_GPU_DEVICE_IDS=''
+        break
+        ;;
+      *) warn 'Opção inválida. Escolha um número entre 1 e 3.' ;;
+    esac
+  done
+
+  case "$OLLAMA_GPU_MODE" in
+    all) success 'Ollama configurado para usar todas as GPUs NVIDIA' ;;
+    selected) success "Ollama configurado para usar: ${OLLAMA_GPU_DEVICE_IDS}" ;;
+    cpu) success 'Ollama configurado para usar somente CPU' ;;
+  esac
 }
 
 read_existing_environment_value() {
@@ -313,6 +436,41 @@ create_local_structure() {
   chmod 755 "$REPOSITORIES_DIR"
   chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
   success "Estrutura local criada em ${BASE_DIR}"
+}
+
+write_ollama_gpu_compose_override() {
+  local temporary_file="${GPU_COMPOSE_FILE}.tmp" device_id
+  local -a device_ids=()
+  if [[ "$OLLAMA_GPU_MODE" == cpu ]]; then
+    rm -f "$GPU_COMPOSE_FILE" "$temporary_file"
+    success 'Ollama permanecerá em CPU'
+    return
+  fi
+
+  {
+    printf 'services:\n'
+    printf '  ollama:\n'
+    printf '    deploy:\n'
+    printf '      resources:\n'
+    printf '        reservations:\n'
+    printf '          devices:\n'
+    printf '            - driver: nvidia\n'
+    if [[ "$OLLAMA_GPU_MODE" == all ]]; then
+      printf '              count: all\n'
+    else
+      IFS=',' read -ra device_ids <<<"$OLLAMA_GPU_DEVICE_IDS"
+      (( ${#device_ids[@]} > 0 )) || fail 'Nenhuma GPU foi selecionada para o Ollama.'
+      printf '              device_ids:\n'
+      for device_id in "${device_ids[@]}"; do
+        [[ "$device_id" =~ ^GPU-[A-Za-z0-9-]+$ ]] || fail "UUID de GPU inválido: ${device_id}"
+        printf '                - "%s"\n' "$device_id"
+      done
+    fi
+    printf '              capabilities: [gpu]\n'
+  } >"$temporary_file"
+  chmod 600 "$temporary_file"
+  mv "$temporary_file" "$GPU_COMPOSE_FILE"
+  success "Override de GPU criado em ${GPU_COMPOSE_FILE}"
 }
 
 configure_google_drive_sync() {
@@ -404,8 +562,8 @@ create_environment_file() {
     existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 20 )) && repository_sync_concurrency="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_CHAT_MODEL=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_CHAT_MODEL" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_CHAT_MODEL" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -434,10 +592,12 @@ configure_codebase_memory_command() {
 }
 
 docker_compose() {
+  local -a compose_files=(-f "${BASE_DIR}/compose.yaml")
+  [[ ! -f "$GPU_COMPOSE_FILE" ]] || compose_files+=(-f "$GPU_COMPOSE_FILE")
   if docker info >/dev/null 2>&1; then
-    docker compose "$@"
+    docker compose "${compose_files[@]}" "$@"
   else
-    sudo docker compose "$@"
+    sudo docker compose "${compose_files[@]}" "$@"
   fi
 }
 
@@ -652,6 +812,27 @@ validate_openwebui_command() {
   }
 }
 
+validate_ollama_gpu_command() {
+  local visible_uuids device_id
+  local -a expected_devices=()
+  [[ "$OLLAMA_GPU_MODE" != cpu ]] || return 0
+  visible_uuids="$(docker_compose exec -T ollama nvidia-smi --query-gpu=uuid --format=csv,noheader | sed '/^[[:space:]]*$/d' | paste -sd, - | tr -d '[:space:]')"
+  [[ -n "$visible_uuids" ]] || {
+    docker_compose logs --tail=200 ollama
+    return 1
+  }
+  if [[ "$OLLAMA_GPU_MODE" == selected ]]; then
+    IFS=',' read -ra expected_devices <<<"$OLLAMA_GPU_DEVICE_IDS"
+    for device_id in "${expected_devices[@]}"; do
+      [[ ",${visible_uuids}," == *",${device_id},"* ]] || {
+        printf 'GPU selecionada não visível no container: %s\n' "$device_id" >&2
+        return 1
+      }
+    done
+  fi
+  printf 'GPUs visíveis no container Ollama: %s\n' "$visible_uuids"
+}
+
 restart_and_validate_knowledge_sync_command() {
   docker_compose up -d --build --force-recreate knowledge-sync
   docker_compose exec -T admin node --input-type=module -e '
@@ -761,10 +942,15 @@ validate_installation_command() {
 }
 
 show_summary() {
-  local ui_port agentgateway_ui_port openwebui_port
+  local ui_port agentgateway_ui_port openwebui_port ollama_acceleration
   ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   agentgateway_ui_port="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  case "$OLLAMA_GPU_MODE" in
+    all) ollama_acceleration='todas as GPUs NVIDIA' ;;
+    selected) ollama_acceleration="GPUs ${OLLAMA_GPU_DEVICE_IDS}" ;;
+    *) ollama_acceleration='CPU' ;;
+  esac
   printf "\n${COLOR_GREEN}${COLOR_BOLD}✔ Instalação concluída${COLOR_RESET}\n\n"
   printf '  Repositórios : %s\n' "$REPOSITORIES_DIR"
   printf '  Cache        : %s\n' "$CACHE_DIR"
@@ -773,6 +959,7 @@ show_summary() {
   printf '  Executável   : %s\n' "$CBM_BIN"
   printf '  E-mail admin : %s\n' "$ADMIN_EMAIL"
   printf '  Modelo Ollama: %s\n' "$OLLAMA_CHAT_MODEL"
+  printf '  Aceleração   : %s\n' "$ollama_acceleration"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
   printf '\nUI oficial do Codebase Memory:\n  http://<IP-ou-dominio>:%s/\n' "$ui_port"
   printf '\nPainel administrativo protegido:\n  http://<IP-ou-dominio>:%s/admin/\n\n' "$ui_port"
@@ -789,12 +976,17 @@ main() {
   info "Responda agora às perguntas necessárias. Depois disso, a instalação seguirá sem interrupções."
   ask_memory_budget
   ask_ollama_model
+  ask_ollama_gpu
   ask_proxy_access
   validate_sudo
   keep_sudo_alive
   success "Configuração concluída; iniciando instalação não interativa"
   install_dependencies
+  if [[ "$OLLAMA_GPU_MODE" != cpu ]]; then
+    run_step "Configurando o runtime NVIDIA no Docker" configure_nvidia_runtime_command
+  fi
   create_local_structure
+  write_ollama_gpu_compose_override
   configure_google_drive_sync
   create_proxy_credentials
   create_environment_file
@@ -802,6 +994,9 @@ main() {
   run_step "Aplicando configurações do Codebase Memory" configure_codebase_memory_command
   run_step "Validando a instalação" validate_installation_command
   run_step "Construindo e iniciando o painel administrativo" start_admin_panel_command
+  if [[ "$OLLAMA_GPU_MODE" != cpu ]]; then
+    run_step "Validando o acesso do Ollama às GPUs" validate_ollama_gpu_command
+  fi
   run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
   run_step "Aguardando a UI do grafo ficar disponível" validate_graph_ui_command
   run_step "Aguardando a Admin UI do AgentGateway ficar disponível" validate_agentgateway_command

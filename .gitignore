@@ -9,3 +9,5 @@
 
 # Arquivos temporários do instalador
 .env.tmp
+compose.gpu.yaml
+compose.gpu.yaml.tmp

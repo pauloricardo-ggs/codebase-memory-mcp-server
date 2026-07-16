@@ -633,6 +633,48 @@ function enqueueRepositorySync(item, { source = 'manual', parentJobId = null, de
   return { job, completion };
 }
 
+async function indexRepository(item, log) {
+  item.status = 'indexing';
+  const result = await run(CBM_BIN, indexRepositoryArguments(item.path), { onOutput: log });
+  const indexed = parseLastJsonLine(result.stdout);
+  if (indexed?.project) item.project = indexed.project;
+  item.status = 'indexed';
+  item.lastIndexedAt = new Date().toISOString();
+}
+
+function runWorkspaceIndex(selectedWorkspace) {
+  const repositories = state.repositories.filter(item => item.workspaceId === selectedWorkspace.id);
+  if (!repositories.length) throw new Error('Este workspace não possui repositórios para indexar.');
+  return createJob('workspace-index', `Indexando workspace ${selectedWorkspace.name}`, `workspace-index/${selectedWorkspace.id}`, async (job, log) => {
+    job.totalRepositories = repositories.length;
+    job.completedRepositories = 0;
+    const failures = [];
+    for (const item of repositories) {
+      const repositoryLock = `${item.workspaceId}/${item.id}`;
+      if (locks.has(repositoryLock)) {
+        log(`${item.fullName}: ignorado porque já existe uma operação em andamento.\n`);
+      } else {
+        locks.add(repositoryLock);
+        item.activeJobId = job.id;
+        log(`\nIndexando ${item.fullName}...\n`);
+        try {
+          await indexRepository(item, log);
+        } catch (error) {
+          item.status = 'error';
+          failures.push(`${item.fullName}: ${error.message}`);
+          log(`${item.fullName}: ${error.message}\n`);
+        } finally {
+          locks.delete(repositoryLock);
+        }
+      }
+      job.completedRepositories += 1;
+      job.progress = Math.round(job.completedRepositories / repositories.length * 100);
+      await persist();
+    }
+    if (failures.length) throw new Error(`${failures.length} repositório(s) falharam durante a indexação.`);
+  });
+}
+
 async function runWorkspaceSync(selectedWorkspace, source = 'schedule') {
   if (activeWorkspaceSyncs.has(selectedWorkspace.id)) throw new Error('Já existe uma sincronização do workspace em andamento.');
   activeWorkspaceSyncs.add(selectedWorkspace.id);
@@ -905,6 +947,11 @@ async function routeApi(request, response, url) {
       await persist();
       return json(response, 202, job);
     }
+    if (parts[2] === 'index' && parts.length === 3 && request.method === 'POST') {
+      const job = runWorkspaceIndex(selectedWorkspace);
+      await persist();
+      return json(response, 202, job);
+    }
     if (parts[2] === 'repositories' && parts.length === 3 && request.method === 'POST') {
       const input = await body(request);
       if (!Array.isArray(input.repositories) || !input.repositories.length) throw new Error('Selecione pelo menos um repositório.');
@@ -952,11 +999,7 @@ async function routeApi(request, response, url) {
       }
       if (parts[4] === 'index' && request.method === 'POST') {
         const job = createJob('index', `Indexando ${item.fullName}`, `${workspaceId}/${item.id}`, async (_job, log) => {
-          item.status = 'indexing';
-          const result = await run(CBM_BIN, indexRepositoryArguments(item.path), { onOutput: log });
-          const response = parseLastJsonLine(result.stdout);
-          if (response?.project) item.project = response.project;
-          item.status = 'indexed'; item.lastIndexedAt = new Date().toISOString();
+          await indexRepository(item, log);
         });
         item.activeJobId = job.id; await persist(); return json(response, 202, job);
       }

@@ -32,13 +32,25 @@ function toast(message, type = '') {
   const node = document.createElement('div'); node.className = `toast ${type}`; node.textContent = message; $('#toasts').append(node); setTimeout(() => node.remove(), 4500);
 }
 
-function openModal(html) { $('#modal-content').innerHTML = html; modal.showModal(); }
+function openModal(html, submitAction = '') {
+  $('#modal-content').innerHTML = html;
+  modal.dataset.submitAction = submitAction;
+  modal.showModal();
+}
 function closeModal() { modal.close(); }
 function setHeader(title, breadcrumb = 'Administração', actions = '') { $('#page-title').textContent = title; $('#breadcrumb').textContent = breadcrumb; $('#header-actions').innerHTML = actions; }
 function setNavigation(view) { $$('[data-view]').forEach(item => item.classList.toggle('active', item.dataset.view === view)); }
 modal.addEventListener('close', () => {
   if (modal.open) return;
+  delete modal.dataset.submitAction;
   $('#modal-content').replaceChildren();
+});
+modal.querySelector('form').addEventListener('submit', event => {
+  const action = document.activeElement?.dataset.enterAction || modal.dataset.submitAction;
+  if (!action) return;
+  event.preventDefault();
+  const submitButton = $(`[data-action="${action}"]`, modal);
+  if (submitButton && !submitButton.disabled) submitButton.click();
 });
 
 function graphUrl(project = '') {
@@ -114,7 +126,7 @@ async function renderWorkspace(id) {
   currentView = 'workspace'; currentWorkspace = id;
   setNavigation('workspaces');
   const { workspace, repositories } = await api(`/api/workspaces/${id}`);
-  setHeader(workspace.name, 'Workspaces / Detalhes', '<button class="button" data-action="delete-workspace">Excluir workspace</button> <button class="button primary" data-action="add-repositories">＋ Adicionar repositórios</button>');
+  setHeader(workspace.name, 'Workspaces / Detalhes', '<button class="button" data-action="delete-workspace">Excluir workspace</button> <button class="button" data-action="index-workspace">Indexar tudo</button> <button class="button primary" data-action="add-repositories">＋ Adicionar repositórios</button>');
   const schedule = workspace.updateSchedule;
   const mcpAccess = workspace.mcpAccess || {};
   const mcpActive = mcpAccess.status === 'active';
@@ -125,7 +137,7 @@ async function renderWorkspace(id) {
 
 function editScheduleModal(schedule) {
   const [minute, hour, day, month, weekday] = schedule.cron.split(' ');
-  openModal(`<h2 class="modal-title">Atualização automática</h2><p class="modal-copy">Configure os cinco campos do cron separadamente. Use <code>*</code> para qualquer valor, vírgula para listas e <code>*/n</code> para intervalos.</p><div class="cron-fields"><div class="field"><label for="schedule-minute">Minuto</label><input id="schedule-minute" value="${escapeHtml(minute)}" placeholder="0"><small>0–59</small></div><div class="field"><label for="schedule-hour">Hora</label><input id="schedule-hour" value="${escapeHtml(hour)}" placeholder="*"><small>0–23</small></div><div class="field"><label for="schedule-day">Dia do mês</label><input id="schedule-day" value="${escapeHtml(day)}" placeholder="*"><small>1–31</small></div><div class="field"><label for="schedule-month">Mês</label><input id="schedule-month" value="${escapeHtml(month)}" placeholder="*"><small>1–12</small></div><div class="field"><label for="schedule-weekday">Dia da semana</label><input id="schedule-weekday" value="${escapeHtml(weekday)}" placeholder="*"><small>0–7, domingo</small></div></div><div class="cron-preview"><small>Configuração atual</small><strong>${escapeHtml(schedule.description)}</strong><code>${escapeHtml(schedule.cron)}</code></div><div class="field"><label for="schedule-timezone">Fuso horário</label><input id="schedule-timezone" value="${escapeHtml(schedule.timezone)}" placeholder="America/Maceio"></div><label class="switch-control switch-modal"><input id="schedule-enabled" type="checkbox" ${schedule.enabled ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span><span>Rotina ativada</span></label><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-schedule">Salvar</button></div>`);
+  openModal(`<h2 class="modal-title">Atualização automática</h2><p class="modal-copy">Configure os cinco campos do cron separadamente. Use <code>*</code> para qualquer valor, vírgula para listas e <code>*/n</code> para intervalos.</p><div class="cron-fields"><div class="field"><label for="schedule-minute">Minuto</label><input id="schedule-minute" value="${escapeHtml(minute)}" placeholder="0"><small>0–59</small></div><div class="field"><label for="schedule-hour">Hora</label><input id="schedule-hour" value="${escapeHtml(hour)}" placeholder="*"><small>0–23</small></div><div class="field"><label for="schedule-day">Dia do mês</label><input id="schedule-day" value="${escapeHtml(day)}" placeholder="*"><small>1–31</small></div><div class="field"><label for="schedule-month">Mês</label><input id="schedule-month" value="${escapeHtml(month)}" placeholder="*"><small>1–12</small></div><div class="field"><label for="schedule-weekday">Dia da semana</label><input id="schedule-weekday" value="${escapeHtml(weekday)}" placeholder="*"><small>0–7, domingo</small></div></div><div class="cron-preview"><small>Configuração atual</small><strong>${escapeHtml(schedule.description)}</strong><code>${escapeHtml(schedule.cron)}</code></div><div class="field"><label for="schedule-timezone">Fuso horário</label><input id="schedule-timezone" value="${escapeHtml(schedule.timezone)}" placeholder="America/Maceio"></div><label class="switch-control switch-modal"><input id="schedule-enabled" type="checkbox" ${schedule.enabled ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span><span>Rotina ativada</span></label><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-schedule">Salvar</button></div>`, 'save-schedule');
 }
 
 function syncStatusLabel(target) {
@@ -196,7 +208,7 @@ async function renderKnowledgeSync() {
 
 function drivePickerModal() {
   const currentClientId = knowledgeSyncPickerConfig?.clientId || '';
-  openModal(`<h2 class="modal-title">Configurar Picker do Google Drive</h2><p class="modal-copy">Ao salvar as duas credenciais, a integração será ativada imediatamente no Open WebUI. O Client Secret não é utilizado.</p><div class="field"><label for="drive-picker-client-id">OAuth Client ID</label><input id="drive-picker-client-id" value="${escapeHtml(currentClientId)}" autocomplete="off" placeholder="cliente.apps.googleusercontent.com"></div><div class="field"><label for="drive-picker-api-key">API Key do Google Picker</label><input id="drive-picker-api-key" type="password" autocomplete="new-password" placeholder="${knowledgeSyncPickerConfig?.apiKeyConfigured ? 'Informe novamente para substituir as credenciais' : 'AIza…'}"><p class="field-help">A chave é persistida no Open WebUI e não será exibida novamente pelo painel.</p></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-drive-picker">Salvar e ativar</button></div>`);
+  openModal(`<h2 class="modal-title">Configurar Picker do Google Drive</h2><p class="modal-copy">Ao salvar as duas credenciais, a integração será ativada imediatamente no Open WebUI. O Client Secret não é utilizado.</p><div class="field"><label for="drive-picker-client-id">OAuth Client ID</label><input id="drive-picker-client-id" value="${escapeHtml(currentClientId)}" autocomplete="off" placeholder="cliente.apps.googleusercontent.com"></div><div class="field"><label for="drive-picker-api-key">API Key do Google Picker</label><input id="drive-picker-api-key" type="password" autocomplete="new-password" placeholder="${knowledgeSyncPickerConfig?.apiKeyConfigured ? 'Informe novamente para substituir as credenciais' : 'AIza…'}"><p class="field-help">A chave é persistida no Open WebUI e não será exibida novamente pelo painel.</p></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-drive-picker">Salvar e ativar</button></div>`, 'save-drive-picker');
 }
 
 async function refreshKnowledgeSyncRows() {
@@ -229,7 +241,7 @@ async function refreshKnowledgeSyncRows() {
 }
 
 function driveCredentialsModal() {
-  openModal(`<h2 class="modal-title">Configurar Google Drive</h2><p class="modal-copy">Selecione no seu computador o JSON baixado do Google Cloud. O navegador o envia diretamente ao servidor, onde será salvo com permissão restrita.</p><div class="field"><label for="drive-credentials-file">Arquivo da Service Account</label><input id="drive-credentials-file" type="file" accept="application/json,.json"><p class="field-help" id="drive-credentials-preview">Nenhum arquivo selecionado.</p></div><details class="credential-details"><summary>Ou cole o conteúdo do JSON</summary><div class="field"><label for="drive-credentials-json">JSON da Service Account</label><textarea id="drive-credentials-json" rows="10" spellcheck="false" placeholder='{"type":"service_account", ...}'></textarea></div></details><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-drive-credentials" disabled>Salvar credencial</button></div>`);
+  openModal(`<h2 class="modal-title">Configurar Google Drive</h2><p class="modal-copy">Selecione no seu computador o JSON baixado do Google Cloud. O navegador o envia diretamente ao servidor, onde será salvo com permissão restrita.</p><div class="field"><label for="drive-credentials-file">Arquivo da Service Account</label><input id="drive-credentials-file" type="file" accept="application/json,.json"><p class="field-help" id="drive-credentials-preview">Nenhum arquivo selecionado.</p></div><details class="credential-details"><summary>Ou cole o conteúdo do JSON</summary><div class="field"><label for="drive-credentials-json">JSON da Service Account</label><textarea id="drive-credentials-json" rows="10" spellcheck="false" placeholder='{"type":"service_account", ...}'></textarea></div></details><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-drive-credentials" disabled>Salvar credencial</button></div>`, 'save-drive-credentials');
   const textarea = $('#drive-credentials-json');
   const preview = $('#drive-credentials-preview');
   const save = $('[data-action="save-drive-credentials"]');
@@ -279,7 +291,7 @@ async function knowledgeSyncModal(knowledgeBaseId) {
   const existing = knowledgeSyncTargets.find(item => item.knowledgeBaseId === knowledgeBaseId);
   knowledgeSyncFolders = folderData.folders;
   selectedDriveFolders = new Map((existing?.folders || []).map(folder => [folder.id, folder]));
-  openModal(`<h2 class="modal-title">Vincular ${escapeHtml(knowledgeBase.name)}</h2><p class="modal-copy">Selecione uma ou mais pastas compartilhadas com <strong>${escapeHtml(folderData.serviceAccountEmail)}</strong>. O worker manterá os arquivos isolados nesta base.</p><input class="search" id="drive-folder-search" placeholder="Buscar pasta por nome ou ID…"><div class="picker-summary"><span>${knowledgeSyncFolders.length} acessíveis</span><strong id="drive-folder-selection">${selectedDriveFolders.size} selecionada${selectedDriveFolders.size === 1 ? '' : 's'}</strong></div><div class="picker" id="drive-folder-picker">${driveFolderRows(knowledgeSyncFolders)}</div><div class="field"><label for="drive-folder-id">Adicionar diretamente pelo folder ID</label><div class="inline-field"><input id="drive-folder-id" placeholder="ID da pasta compartilhada"><button class="button" type="button" data-action="add-drive-folder-id">Adicionar</button></div></div><div class="field"><label for="knowledge-sync-interval">Intervalo em minutos</label><input id="knowledge-sync-interval" type="number" min="5" max="10080" value="${existing?.intervalMinutes || 60}"><p class="field-help">Mínimo de 5 minutos. Alterações são enviadas para esta Knowledge Base e processadas pelo Open WebUI.</p></div><label class="switch-control switch-modal"><input id="knowledge-sync-enabled" type="checkbox" ${existing?.enabled === false ? '' : 'checked'}><span class="switch-track" aria-hidden="true"></span><span>Sincronização ativada</span></label><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}" ${selectedDriveFolders.size ? '' : 'disabled'}>Salvar vínculo</button></div>`);
+  openModal(`<h2 class="modal-title">Vincular ${escapeHtml(knowledgeBase.name)}</h2><p class="modal-copy">Selecione uma ou mais pastas compartilhadas com <strong>${escapeHtml(folderData.serviceAccountEmail)}</strong>. O worker manterá os arquivos isolados nesta base.</p><input class="search" id="drive-folder-search" placeholder="Buscar pasta por nome ou ID…"><div class="picker-summary"><span>${knowledgeSyncFolders.length} acessíveis</span><strong id="drive-folder-selection">${selectedDriveFolders.size} selecionada${selectedDriveFolders.size === 1 ? '' : 's'}</strong></div><div class="picker" id="drive-folder-picker">${driveFolderRows(knowledgeSyncFolders)}</div><div class="field"><label for="drive-folder-id">Adicionar diretamente pelo folder ID</label><div class="inline-field"><input id="drive-folder-id" data-enter-action="add-drive-folder-id" placeholder="ID da pasta compartilhada"><button class="button" type="button" data-action="add-drive-folder-id">Adicionar</button></div></div><div class="field"><label for="knowledge-sync-interval">Intervalo em minutos</label><input id="knowledge-sync-interval" type="number" min="5" max="10080" value="${existing?.intervalMinutes || 60}"><p class="field-help">Mínimo de 5 minutos. Alterações são enviadas para esta Knowledge Base e processadas pelo Open WebUI.</p></div><label class="switch-control switch-modal"><input id="knowledge-sync-enabled" type="checkbox" ${existing?.enabled === false ? '' : 'checked'}><span class="switch-track" aria-hidden="true"></span><span>Sincronização ativada</span></label><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}" ${selectedDriveFolders.size ? '' : 'disabled'}>Salvar vínculo</button></div>`, 'save-knowledge-sync');
   $('#drive-folder-search').addEventListener('input', event => {
     const query = normalizeSearch(event.target.value);
     const filtered = knowledgeSyncFolders.filter(folder => normalizeSearch(`${folder.name} ${folder.id}`).includes(query));
@@ -369,13 +381,13 @@ function updateMcpAccessSelection() {
 
 function newMcpUserModal() {
   selectedMcpRepositories = new Set();
-  openModal(`<h2 class="modal-title">Novo usuário MCP</h2><p class="modal-copy">Um token individual será gerado e exibido uma única vez após o cadastro.</p><div class="field"><label for="mcp-user-name">Nome</label><input id="mcp-user-name" maxlength="100" autofocus placeholder="Ex.: Maria Silva"></div><div class="field"><label for="mcp-user-identity">E-mail ou login</label><input id="mcp-user-identity" maxlength="160" placeholder="maria@empresa.com"></div><div class="field"><label for="mcp-user-description">Descrição</label><textarea id="mcp-user-description" maxlength="240" placeholder="Time ou finalidade do acesso"></textarea></div>${mcpAccessPicker()}<div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-user" disabled>Criar e gerar token</button></div>`);
+  openModal(`<h2 class="modal-title">Novo usuário MCP</h2><p class="modal-copy">Um token individual será gerado e exibido uma única vez após o cadastro.</p><div class="field"><label for="mcp-user-name">Nome</label><input id="mcp-user-name" maxlength="100" autofocus placeholder="Ex.: Maria Silva"></div><div class="field"><label for="mcp-user-identity">E-mail ou login</label><input id="mcp-user-identity" maxlength="160" placeholder="maria@empresa.com"></div><div class="field"><label for="mcp-user-description">Descrição</label><textarea id="mcp-user-description" maxlength="240" placeholder="Time ou finalidade do acesso"></textarea></div>${mcpAccessPicker()}<div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-user" disabled>Criar e gerar token</button></div>`, 'save-mcp-user');
   updateMcpAccessSelection();
 }
 
 function editMcpAccessModal(user) {
   selectedMcpRepositories = new Set(user.repositoryIds || []);
-  openModal(`<h2 class="modal-title">Acessos de ${escapeHtml(user.name)}</h2><p class="modal-copy">Alterações entram em vigor nas próximas chamadas e não exigem gerar outro token.</p>${mcpAccessPicker()}<div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-access" data-user="${escapeHtml(user.id)}">Salvar acessos</button></div>`);
+  openModal(`<h2 class="modal-title">Acessos de ${escapeHtml(user.name)}</h2><p class="modal-copy">Alterações entram em vigor nas próximas chamadas e não exigem gerar outro token.</p>${mcpAccessPicker()}<div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-mcp-access" data-user="${escapeHtml(user.id)}">Salvar acessos</button></div>`, 'save-mcp-access');
   updateMcpAccessSelection();
 }
 
@@ -415,17 +427,17 @@ async function copyText(value) {
 }
 
 function newWorkspaceModal() {
-  openModal(`<h2 class="modal-title">Novo workspace</h2><p class="modal-copy">Use um nome que represente um produto, domínio ou conjunto de serviços.</p><div class="field"><label for="workspace-name">Nome</label><input id="workspace-name" maxlength="80" autofocus placeholder="Ex.: Plataforma de pagamentos"></div><div class="field"><label for="workspace-description">Descrição</label><textarea id="workspace-description" maxlength="240" placeholder="Contexto opcional do workspace"></textarea></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-workspace">Criar workspace</button></div>`);
+  openModal(`<h2 class="modal-title">Novo workspace</h2><p class="modal-copy">Use um nome que represente um produto, domínio ou conjunto de serviços.</p><div class="field"><label for="workspace-name">Nome</label><input id="workspace-name" maxlength="80" autofocus placeholder="Ex.: Plataforma de pagamentos"></div><div class="field"><label for="workspace-description">Descrição</label><textarea id="workspace-description" maxlength="240" placeholder="Contexto opcional do workspace"></textarea></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-workspace">Criar workspace</button></div>`, 'save-workspace');
 }
 
 function connectGithubModal() {
-  openModal(`<h2 class="modal-title">Conectar ao GitHub</h2><p class="modal-copy">Use um token fine-grained com acesso de leitura a metadados e conteúdos. Ele será armazenado localmente, com acesso restrito, e preservado ao reiniciar ou atualizar o painel.</p><div class="field"><label for="github-token">Personal access token</label><input id="github-token" type="password" autocomplete="off" placeholder="github_pat_…"></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-github">Conectar e salvar</button></div>`);
+  openModal(`<h2 class="modal-title">Conectar ao GitHub</h2><p class="modal-copy">Use um token fine-grained com acesso de leitura a metadados e conteúdos. Ele será armazenado localmente, com acesso restrito, e preservado ao reiniciar ou atualizar o painel.</p><div class="field"><label for="github-token">Personal access token</label><input id="github-token" type="password" autocomplete="off" placeholder="github_pat_…"></div><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-github">Conectar e salvar</button></div>`, 'save-github');
 }
 
 async function repositoryPicker() {
   const connection = await renderGithub();
   if (!connection.connected) { connectGithubModal(); return; }
-  openModal('<h2 class="modal-title">Adicionar repositórios</h2><p class="modal-copy">Carregando repositórios disponíveis…</p><div class="loading"><i></i> Consultando GitHub</div>');
+  openModal('<h2 class="modal-title">Adicionar repositórios</h2><p class="modal-copy">Carregando repositórios disponíveis…</p><div class="loading"><i></i> Consultando GitHub</div>', 'clone-selected');
   try {
     const [{ repositories }, workspaceData] = await Promise.all([
       api('/api/github/repositories'),
@@ -583,6 +595,12 @@ document.addEventListener('click', async event => {
     if (action === 'run-workspace-sync') {
       await api(`/api/workspaces/${currentWorkspace}/schedule/run`, { method:'POST' });
       toast('Sincronização do workspace adicionada à fila global.'); return refreshJobs();
+    }
+    if (action === 'index-workspace') {
+      if (!confirm('Indexar todos os repositórios deste workspace?')) return;
+      await api(`/api/workspaces/${currentWorkspace}/index`, { method:'POST' });
+      toast('Indexação completa adicionada à fila.');
+      return refreshJobs();
     }
     if (action === 'new-mcp-user') return newMcpUserModal();
     if (action === 'edit-mcp-access') {

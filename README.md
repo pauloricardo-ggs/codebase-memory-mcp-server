@@ -201,10 +201,10 @@ Adicione o servidor ao arquivo de usuário `~/.codex/config.toml`:
 enabled = true
 startup_timeout_sec = 30
 tool_timeout_sec = 120
-url = "http://192.168.64.3:8787/mcp"
+url = "http://<IP_DO_SERVIDOR_MCP>:<PORTA_DO_SERVIDOR_MCP>/mcp"
 
 [mcp_servers.codebase_memory.http_headers]
-Authorization = "Bearer <SEU_TOKEN>>"
+Authorization = "Bearer <SEU_TOKEN>"
 ```
 
 Substitua o IP e a porta pelos valores da sua instalação e reinicie o Codex.
@@ -267,6 +267,8 @@ REPOSITORY_SYNC_CONCURRENCY=3
 ADMIN_EMAIL=admin@local.invalid
 ADMIN_USERNAME=admin@local.invalid
 OLLAMA_CHAT_MODEL=qwen3:14b
+OLLAMA_GPU_MODE=all
+OLLAMA_GPU_DEVICE_IDS=
 ```
 
 As opções mais comuns são:
@@ -280,10 +282,14 @@ As opções mais comuns são:
 | `WORKSPACE_TIMEZONE` | Fuso usado nos agendamentos |
 | `REPOSITORY_SYNC_CONCURRENCY` | Quantidade de sincronizações simultâneas, entre 1 e 20 |
 | `OLLAMA_CHAT_MODEL` | Modelo baixado pelo instalador; padrão `qwen3:14b` |
+| `OLLAMA_GPU_MODE` | Aceleração do Ollama: `cpu`, `all` ou `selected` |
+| `OLLAMA_GPU_DEVICE_IDS` | UUIDs NVIDIA separados por vírgula quando o modo é `selected` |
 | `OLLAMA_VERSION` | Tag da imagem Docker do Ollama |
 | `DOCLING_VERSION` | Tag da imagem Docker do Docling Serve |
 
 Execute novamente `./install.sh` depois de alterar configurações que exijam a recriação do ambiente.
+
+Quando o `nvidia-smi` encontra uma ou mais GPUs, o instalador permite usar todas, selecionar placas específicas ou manter o Ollama em CPU. A seleção é persistida por UUID — não pelo índice sujeito a mudanças — e gera o arquivo local `compose.gpu.yaml`. Se a aceleração for habilitada, o instalador também configura o NVIDIA Container Toolkit, reinicia o Docker e valida se as GPUs escolhidas estão visíveis dentro do container do Ollama.
 
 </details>
 
@@ -302,6 +308,7 @@ codebase-memory-mcp-server/
 ├── data/            # estado e segredos da instalação
 ├── repositories/    # clones organizados por workspace
 ├── compose.yaml
+├── compose.gpu.yaml # gerado somente quando a GPU NVIDIA é habilitada
 ├── install.sh
 └── .env
 ```

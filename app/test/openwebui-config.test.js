@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -102,10 +102,32 @@ test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF intern
   assert.match(server, /validateGoogleServiceAccount/);
 });
 
+test('painel confirma workspace com Enter e permite indexar o workspace aberto', async () => {
+  const [browser, server] = await Promise.all([
+    readFile(path.join(root, 'app/public/app.js'), 'utf8'),
+    readFile(path.join(root, 'app/src/server.js'), 'utf8')
+  ]);
+  assert.match(browser, /modal\.querySelector\('form'\)\.addEventListener\('submit'/);
+  assert.match(browser, /newWorkspaceModal[\s\S]*'save-workspace'/);
+  for (const action of ['save-schedule', 'save-drive-picker', 'save-drive-credentials', 'save-knowledge-sync', 'save-mcp-user', 'save-mcp-access', 'save-github', 'clone-selected']) {
+    assert.match(browser, new RegExp(`openModal\\([^;]+, '${action}'\\)`), `Enter deve acionar ${action}`);
+  }
+  assert.match(browser, /data-enter-action="add-drive-folder-id"/);
+  assert.match(browser, /data-action="index-workspace"/);
+  assert.match(browser, /\/api\/workspaces\/\$\{currentWorkspace\}\/index/);
+  assert.match(server, /function runWorkspaceIndex/);
+  assert.match(server, /parts\[2\] === 'index'.*request\.method === 'POST'/);
+});
+
 test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   const install = await readFile(path.join(root, 'install.sh'), 'utf8');
   assert.match(install, /OLLAMA_CHAT_MODEL='qwen3:14b'/);
   assert.match(install, /ask_ollama_model/);
+  assert.match(install, /ask_ollama_gpu/);
+  assert.match(install, /nvidia-smi --query-gpu=index,uuid,name,memory\.total/);
+  assert.match(install, /nvidia-ctk runtime configure --runtime=docker/);
+  assert.match(install, /write_ollama_gpu_compose_override/);
+  assert.match(install, /validate_ollama_gpu_command/);
   assert.doesNotMatch(install, /ask_google_drive_integration/);
   assert.doesNotMatch(install, /Deseja habilitar o Google Drive/);
   assert.doesNotMatch(install, /OAuth Client ID do Google/);
@@ -128,6 +150,87 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   if (process.platform !== 'win32') {
     const mode = (await stat(path.join(root, 'openwebui/bootstrap/bootstrap.sh'))).mode & 0o777;
     assert.ok(mode & 0o100, 'bootstrap.sh deve ser executável');
+  }
+});
+
+test('instalador seleciona múltiplas GPUs por índice e persiste os UUIDs no override', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-gpu-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    const binaryDirectory = path.join(temporaryRoot, 'bin');
+    await mkdir(binaryDirectory);
+    const nvidiaSmi = path.join(binaryDirectory, 'nvidia-smi');
+    await writeFile(nvidiaSmi, `#!/usr/bin/env bash
+if [[ "$*" == *"--query-gpu=index,uuid,name,memory.total"* ]]; then
+  printf '0, GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa, NVIDIA RTX 4090, 24564\\n'
+  printf '1, GPU-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb, NVIDIA RTX 3090, 24576\\n'
+else
+  printf 'GPU 0: NVIDIA RTX 4090 (UUID: GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)\\n'
+fi
+`);
+    await chmod(nvidiaSmi, 0o755);
+    const selectionFile = path.join(temporaryRoot, 'selection');
+    await execFileAsync('bash', ['-c', `
+      export PATH="$2:$PATH"
+      source "$1"
+      ask_ollama_gpu <<< $'2\\n1,0\\n'
+      printf '%s\\n%s\\n' "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$3"
+      write_ollama_gpu_compose_override
+    `, 'test', path.join(temporaryRoot, 'install.sh'), binaryDirectory, selectionFile]);
+
+    assert.equal(
+      await readFile(selectionFile, 'utf8'),
+      'selected\nGPU-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n'
+    );
+    const override = await readFile(path.join(temporaryRoot, 'compose.gpu.yaml'), 'utf8');
+    assert.match(override, /driver: nvidia/);
+    assert.match(override, /GPU-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/);
+    assert.match(override, /GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/);
+    assert.match(override, /capabilities: \[gpu\]/);
+    assert.doesNotMatch(override, /count: all/);
+
+    await writeFile(
+      path.join(temporaryRoot, '.env'),
+      'OLLAMA_GPU_MODE=selected\nOLLAMA_GPU_DEVICE_IDS=GPU-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,GPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n'
+    );
+    const preservedSelectionFile = path.join(temporaryRoot, 'preserved-selection');
+    await execFileAsync('bash', ['-c', `
+      export PATH="$2:$PATH"
+      source "$1"
+      ask_ollama_gpu <<< $'\\n\\n'
+      printf '%s\\n%s\\n' "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$3"
+    `, 'test', path.join(temporaryRoot, 'install.sh'), binaryDirectory, preservedSelectionFile]);
+    assert.equal(
+      await readFile(preservedSelectionFile, 'utf8'),
+      'selected\nGPU-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,GPU-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n'
+    );
+
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      OLLAMA_GPU_MODE=all
+      write_ollama_gpu_compose_override
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+    const allGpusOverride = await readFile(path.join(temporaryRoot, 'compose.gpu.yaml'), 'utf8');
+    assert.match(allGpusOverride, /count: all/);
+    assert.doesNotMatch(allGpusOverride, /device_ids:/);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('modo CPU remove o override de GPU do Ollama', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-cpu-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await writeFile(path.join(temporaryRoot, 'compose.gpu.yaml'), 'configuração anterior');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      OLLAMA_GPU_MODE=cpu
+      write_ollama_gpu_compose_override
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+    await assert.rejects(readFile(path.join(temporaryRoot, 'compose.gpu.yaml')), { code: 'ENOENT' });
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 
