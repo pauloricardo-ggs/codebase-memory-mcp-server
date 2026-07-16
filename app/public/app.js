@@ -133,7 +133,7 @@ function syncStatusLabel(target) {
   return target ? 'Aguardando' : 'Sem vínculo';
 }
 
-function knowledgeSyncRow(knowledgeBase, target) {
+function knowledgeSyncRow(knowledgeBase, target, driveConfigured) {
   const status = syncStatusLabel(target);
   const statusClass = target?.running ? 'running' : target?.lastRunStatus === 'failed' ? 'failed' : target?.enabled ? 'active' : 'revoked';
   const folders = target?.folders || [];
@@ -142,8 +142,8 @@ function knowledgeSyncRow(knowledgeBase, target) {
     <div class="knowledge-sync-folders"><small>Pastas do Drive</small>${folders.length ? `<div>${folders.map(folder => `<span class="folder-chip" title="${escapeHtml(folder.id)}">▣ ${escapeHtml(folder.name)}</span>`).join('')}</div>` : '<span class="subtle">Nenhuma pasta vinculada</span>'}</div>
     <div class="knowledge-sync-stats"><small>Sincronização</small><span class="status ${statusClass}">${status}</span>${target ? `<span>${target.managedFileCount} arquivo${target.managedFileCount === 1 ? '' : 's'} · a cada ${target.intervalMinutes} min</span><span>Última: ${date(target.lastRunAt)}</span>` : '<span>Configure para iniciar</span>'}${target?.lastError ? `<span class="sync-error" title="${escapeHtml(target.lastError)}">${escapeHtml(target.lastError)}</span>` : ''}</div>
     <div class="repo-actions">
-      ${target ? `<button class="button small" data-action="run-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${target.running ? 'disabled' : ''}>Sincronizar agora</button><button class="button small" data-action="toggle-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}">${target.enabled ? 'Pausar' : 'Ativar'}</button><button class="button small" data-action="knowledge-sync-history" data-kb="${escapeHtml(knowledgeBase.id)}">Histórico</button><button class="button small danger" data-action="delete-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}">Desvincular</button>` : ''}
-      <button class="button small ${target ? '' : 'primary'}" data-action="configure-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}">${target ? 'Editar vínculo' : 'Vincular pastas'}</button>
+      ${target ? `<button class="button small" data-action="run-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${target.running || !driveConfigured ? 'disabled' : ''}>Sincronizar agora</button><button class="button small" data-action="toggle-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target.enabled ? 'Pausar' : 'Ativar'}</button><button class="button small" data-action="knowledge-sync-history" data-kb="${escapeHtml(knowledgeBase.id)}">Histórico</button><button class="button small danger" data-action="delete-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}">Desvincular</button>` : ''}
+      <button class="button small ${target ? '' : 'primary'}" data-action="configure-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target ? 'Editar vínculo' : 'Vincular pastas'}</button>
     </div>
   </article>`;
 }
@@ -160,9 +160,43 @@ async function renderKnowledgeSync() {
   ]);
   knowledgeSyncTargets = targetData.targets;
   const linked = new Map(knowledgeSyncTargets.map(target => [target.knowledgeBaseId, target]));
-  content.innerHTML = `<div class="access-banner"><div><strong>Sincronização automática ativa</strong><p>Compartilhe as pastas com <code>${escapeHtml(status.serviceAccountEmail)}</code>. Cada vínculo envia arquivos somente para a Knowledge Base selecionada.</p></div><code>${knowledgeSyncTargets.length} vínculo${knowledgeSyncTargets.length === 1 ? '' : 's'}</code></div>
+  const credentialState = status.configured
+    ? `<span class="status active">Configurada</span><p>Compartilhe as pastas com <code>${escapeHtml(status.serviceAccountEmail)}</code>.</p><div class="repo-actions"><button class="button small" data-action="copy-drive-email" data-email="${escapeHtml(status.serviceAccountEmail)}">Copiar e-mail</button><button class="button small" data-action="test-drive-credentials">Testar conexão</button><button class="button small" data-action="configure-drive-credentials">Substituir JSON</button><button class="button small danger" data-action="remove-drive-credentials">Remover</button></div>`
+    : `<span class="status revoked">Não configurada</span><p>Envie o JSON da Service Account para habilitar a seleção de pastas e as sincronizações. Nenhuma credencial é solicitada durante a instalação.</p><button class="button small primary" data-action="configure-drive-credentials">Configurar Google Drive</button>`;
+  content.innerHTML = `<article class="drive-config-card"><div><small>CONTA DE SERVIÇO</small><h2>Credenciais do Google Drive</h2>${credentialState}${status.credentialsError ? `<p class="sync-error">${escapeHtml(status.credentialsError)}</p>` : ''}</div><div class="drive-config-meta"><span><small>Projeto</small><strong>${escapeHtml(status.projectId || '—')}</strong></span><span><small>Vínculos</small><strong>${knowledgeSyncTargets.length}</strong></span></div></article>
+    <div class="access-banner ${status.configured ? '' : 'open'}"><div><strong>${status.configured ? 'Sincronização automática disponível' : 'Worker instalado e aguardando configuração'}</strong><p>${status.configured ? 'Cada vínculo envia arquivos somente para a Knowledge Base selecionada.' : 'O serviço permanece ocioso até uma Service Account ser cadastrada e uma pasta ser vinculada.'}</p></div><code>${knowledgeSyncTargets.length} vínculo${knowledgeSyncTargets.length === 1 ? '' : 's'}</code></div>
     <div class="toolbar"><span class="subtle">${baseData.knowledgeBases.length} Knowledge Base${baseData.knowledgeBases.length === 1 ? '' : 's'} encontrada${baseData.knowledgeBases.length === 1 ? '' : 's'}</span></div>
-    ${baseData.knowledgeBases.length ? `<div class="knowledge-sync-list">${baseData.knowledgeBases.map(base => knowledgeSyncRow(base, linked.get(base.id))).join('')}</div>` : '<div class="empty"><div><div class="empty-icon">KB</div><h2>Nenhuma Knowledge Base encontrada</h2><p>Crie uma base no Open WebUI antes de vincular pastas do Google Drive.</p></div></div>'}`;
+    ${baseData.knowledgeBases.length ? `<div class="knowledge-sync-list">${baseData.knowledgeBases.map(base => knowledgeSyncRow(base, linked.get(base.id), status.configured)).join('')}</div>` : '<div class="empty"><div><div class="empty-icon">KB</div><h2>Nenhuma Knowledge Base encontrada</h2><p>Crie uma base no Open WebUI antes de vincular pastas do Google Drive.</p></div></div>'}`;
+}
+
+function driveCredentialsModal() {
+  openModal(`<h2 class="modal-title">Configurar Google Drive</h2><p class="modal-copy">Selecione no seu computador o JSON baixado do Google Cloud. O navegador o envia diretamente ao servidor, onde será salvo com permissão restrita.</p><div class="field"><label for="drive-credentials-file">Arquivo da Service Account</label><input id="drive-credentials-file" type="file" accept="application/json,.json"><p class="field-help" id="drive-credentials-preview">Nenhum arquivo selecionado.</p></div><details class="credential-details"><summary>Ou cole o conteúdo do JSON</summary><div class="field"><label for="drive-credentials-json">JSON da Service Account</label><textarea id="drive-credentials-json" rows="10" spellcheck="false" placeholder='{"type":"service_account", ...}'></textarea></div></details><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-drive-credentials" disabled>Salvar credencial</button></div>`);
+  const textarea = $('#drive-credentials-json');
+  const preview = $('#drive-credentials-preview');
+  const save = $('[data-action="save-drive-credentials"]');
+  const inspect = () => {
+    try {
+      const parsed = JSON.parse(textarea.value);
+      preview.textContent = parsed.client_email ? `${parsed.client_email}${parsed.project_id ? ` · ${parsed.project_id}` : ''}` : 'O JSON não contém client_email.';
+      save.disabled = parsed.type !== 'service_account' || !parsed.client_email || !parsed.private_key;
+    } catch {
+      preview.textContent = textarea.value.trim() ? 'JSON inválido.' : 'Nenhum arquivo selecionado.';
+      save.disabled = true;
+    }
+  };
+  textarea.addEventListener('input', inspect);
+  $('#drive-credentials-file').addEventListener('change', async event => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 1_000_000) {
+      textarea.value = '';
+      preview.textContent = 'O arquivo excede o limite de 1 MB.';
+      save.disabled = true;
+      return;
+    }
+    textarea.value = await file.text();
+    inspect();
+  });
 }
 
 function driveFolderRows(folders) {
@@ -291,7 +325,7 @@ function mcpTokenModal(name, token, revisable = false) {
 }
 
 async function copyText(value) {
-  if (!value) throw new Error('O token não está mais disponível. Gere ou exiba o token novamente.');
+  if (!value) throw new Error('O conteúdo não está disponível para cópia.');
   if (window.isSecureContext && navigator.clipboard?.writeText) {
     try { await navigator.clipboard.writeText(value); return 'clipboard'; } catch { /* use fallback below */ }
   }
@@ -317,7 +351,7 @@ async function copyText(value) {
     selection.removeAllRanges();
     selection.addRange(range);
   }
-  window.prompt('A cópia automática foi bloqueada pelo navegador. Copie o token abaixo:', value);
+  window.prompt('A cópia automática foi bloqueada pelo navegador. Copie o conteúdo abaixo:', value);
   return 'manual';
 }
 
@@ -411,6 +445,26 @@ document.addEventListener('click', async event => {
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
     if (action === 'configure-knowledge-sync') return knowledgeSyncModal(target.dataset.kb);
+    if (action === 'configure-drive-credentials') return driveCredentialsModal();
+    if (action === 'save-drive-credentials') {
+      target.disabled = true;
+      const credentials = JSON.parse($('#drive-credentials-json').value);
+      await api('/api/knowledge-sync/credentials', { method:'PUT', body:JSON.stringify({ credentials }) });
+      closeModal(); toast('Service Account salva no servidor.'); return renderKnowledgeSync();
+    }
+    if (action === 'test-drive-credentials') {
+      await api('/api/knowledge-sync/credentials/test', { method:'POST', body:'{}' });
+      toast('Conexão com o Google Drive validada.'); return;
+    }
+    if (action === 'copy-drive-email') {
+      await copyText(target.dataset.email);
+      toast('E-mail da Service Account copiado.'); return;
+    }
+    if (action === 'remove-drive-credentials') {
+      if (!confirm('Remover a Service Account? Os vínculos existentes serão pausados e os arquivos já enviados permanecerão nas bases.')) return;
+      await api('/api/knowledge-sync/credentials', { method:'DELETE' });
+      toast('Service Account removida e vínculos pausados.'); return renderKnowledgeSync();
+    }
     if (action === 'add-drive-folder-id') {
       const id = $('#drive-folder-id').value.trim();
       if (!id) throw new Error('Informe o folder ID.');
@@ -543,7 +597,6 @@ document.addEventListener('click', async event => {
 });
 
 publicConfig = await api('/api/config');
-$('#knowledge-sync-nav').hidden = !publicConfig.knowledgeSyncEnabled;
 await Promise.all([renderGithub(), renderWorkspaces(), refreshJobs()]);
 setInterval(refreshJobs, 3000);
 setInterval(() => { if (currentView === 'knowledge-sync') renderKnowledgeSync().catch(() => {}); }, 5000);

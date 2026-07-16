@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,8 @@ const GITHUB_CREDENTIALS_FILE = path.join(DATA_DIR, 'secrets', 'github-credentia
 const MCP_USERS_FILE = path.join(DATA_DIR, 'secrets', 'mcp-users.json');
 const MCP_SYSTEM_TOKEN_FILE = path.join(DATA_DIR, 'secrets', 'mcp-system-token');
 const MCP_WORKSPACE_KEY_FILE = path.join(DATA_DIR, 'secrets', 'mcp-workspace-encryption-key');
-const KNOWLEDGE_SYNC_TOKEN_FILE = process.env.KNOWLEDGE_SYNC_TOKEN_FILE || path.join(DATA_DIR, 'secrets', 'knowledge-sync-token');
+const KNOWLEDGE_SYNC_TOKEN_FILE = process.env.KNOWLEDGE_SYNC_TOKEN_FILE || path.join(DATA_DIR, 'secrets', 'knowledge-sync', 'knowledge-sync-token');
+const GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE = path.join(DATA_DIR, 'secrets', 'knowledge-sync', 'google-drive-service-account.json');
 const CBM_BIN = process.env.CBM_BIN || 'codebase-memory-mcp';
 const PORT = Number(process.env.PORT || 3000);
 const UI_PORT = Number(process.env.UI_PORT);
@@ -26,7 +27,7 @@ const MCP_GUARDRAIL_ADDR = process.env.MCP_GUARDRAIL_ADDR || '0.0.0.0:3001';
 const CBM_PROJECT_RECONCILE = process.env.CBM_PROJECT_RECONCILE !== 'false';
 const WORKSPACE_TIMEZONE = process.env.WORKSPACE_TIMEZONE || DEFAULT_TIMEZONE;
 const REPOSITORY_SYNC_CONCURRENCY = Math.max(1, Math.min(20, Number.parseInt(process.env.REPOSITORY_SYNC_CONCURRENCY || '3', 10) || 3));
-const KNOWLEDGE_SYNC_ENABLED = process.env.KNOWLEDGE_SYNC_ENABLED === 'true';
+const KNOWLEDGE_SYNC_ENABLED = process.env.KNOWLEDGE_SYNC_ENABLED !== 'false';
 const KNOWLEDGE_SYNC_URL = String(process.env.KNOWLEDGE_SYNC_URL || 'http://knowledge-sync:3002').replace(/\/+$/, '');
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
@@ -94,7 +95,7 @@ function errorResponse(response, error, status = error.status || 400) {
 
 async function knowledgeSyncRequest(pathname, { method = 'GET', payload } = {}) {
   if (!KNOWLEDGE_SYNC_ENABLED) {
-    const error = new Error('A sincronização com Google Drive não foi habilitada no instalador.');
+    const error = new Error('O serviço de sincronização com Google Drive está desabilitado.');
     error.status = 503;
     throw error;
   }
@@ -140,6 +141,37 @@ async function body(request) {
   }
   if (!raw) return {};
   try { return JSON.parse(raw); } catch { throw new Error('JSON inválido.'); }
+}
+
+function validateGoogleServiceAccount(value) {
+  const credentials = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
+    throw new Error('Informe o JSON da Service Account.');
+  }
+  if (credentials.type !== 'service_account') throw new Error('O JSON não representa uma Service Account.');
+  if (typeof credentials.client_email !== 'string' || !credentials.client_email.endsWith('.gserviceaccount.com')) {
+    throw new Error('O JSON não contém um e-mail de Service Account válido.');
+  }
+  if (typeof credentials.private_key !== 'string' || !credentials.private_key.includes('BEGIN PRIVATE KEY')) {
+    throw new Error('O JSON não contém uma chave privada válida.');
+  }
+  return credentials;
+}
+
+async function saveGoogleServiceAccount(credentials) {
+  const temporary = `${GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE}.tmp`;
+  await mkdir(path.dirname(GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE), { recursive: true });
+  await writeFile(temporary, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
+  await chmod(temporary, 0o600);
+  await rename(temporary, GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE);
+}
+
+async function removeGoogleServiceAccount() {
+  try {
+    await unlink(GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
 }
 
 function workspace(id) {
@@ -654,6 +686,26 @@ async function routeApi(request, response, url) {
   }
   if (request.method === 'GET' && url.pathname === '/api/config') {
     return json(response, 200, { uiPort: UI_PORT, agentgatewayUiPort: AGENTGATEWAY_UI_PORT, knowledgeSyncEnabled: KNOWLEDGE_SYNC_ENABLED });
+  }
+  if (url.pathname === '/api/knowledge-sync/credentials') {
+    if (request.method === 'GET') {
+      const result = await knowledgeSyncRequest('/api/status');
+      return json(response, result.status, result.result);
+    }
+    if (request.method === 'PUT') {
+      const payload = await body(request);
+      const credentials = validateGoogleServiceAccount(payload.credentials ?? payload);
+      await saveGoogleServiceAccount(credentials);
+      const result = await knowledgeSyncRequest('/api/status');
+      return json(response, 200, result.result);
+    }
+    if (request.method === 'DELETE') {
+      await knowledgeSyncRequest('/api/targets/pause-all', { method: 'POST', payload: {} });
+      await removeGoogleServiceAccount();
+      const status = await knowledgeSyncRequest('/api/status');
+      return json(response, 200, status.result);
+    }
+    return json(response, 405, { error: 'Método não permitido.' });
   }
   if (url.pathname.startsWith('/api/knowledge-sync')) {
     const workerPath = `/api${url.pathname.slice('/api/knowledge-sync'.length)}${url.search}`;

@@ -75,9 +75,9 @@ services:
       AGENTGATEWAY_ADMIN_URL: http://agentgateway:15000
       MCP_GUARDRAIL_ADDR: 0.0.0.0:3001
       MCP_GUARDRAIL_HOST: admin:3001
-      KNOWLEDGE_SYNC_ENABLED: "${ENABLE_GOOGLE_DRIVE_INTEGRATION:-false}"
+      KNOWLEDGE_SYNC_ENABLED: "true"
       KNOWLEDGE_SYNC_URL: http://knowledge-sync:3002
-      KNOWLEDGE_SYNC_TOKEN_FILE: /data/app/secrets/knowledge-sync-token
+      KNOWLEDGE_SYNC_TOKEN_FILE: /data/app/secrets/knowledge-sync/knowledge-sync-token
     volumes:
       - ./data:/data/app
       - ./repositories:/data/repositories
@@ -231,7 +231,6 @@ services:
       - ./data/secrets:/run/cbm-secrets:ro
 
   knowledge-sync:
-    profiles: ["google-drive"]
     build:
       context: ./knowledge-sync
     image: codebase-memory-knowledge-sync:0.1.0
@@ -251,8 +250,7 @@ services:
       KNOWLEDGE_SYNC_TOKEN_FILE: /run/secrets/knowledge-sync-token
     volumes:
       - ./data/knowledge-sync:/data
-      - ./data/secrets/google-drive-service-account.json:/run/secrets/google-drive-service-account.json:ro
-      - ./data/secrets/knowledge-sync-token:/run/secrets/knowledge-sync-token:ro
+      - ./data/secrets/knowledge-sync:/run/secrets:ro
     expose:
       - "3002"
     healthcheck:

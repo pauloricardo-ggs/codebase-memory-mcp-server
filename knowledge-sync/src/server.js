@@ -15,10 +15,7 @@ const OPENWEBUI_PASSWORD = process.env.WEBUI_ADMIN_PASSWORD || '';
 const HISTORY_LIMIT = 200;
 
 await mkdir(DATA_DIR, { recursive: true });
-const [googleCredentials, apiToken] = await Promise.all([
-  readFile(GOOGLE_CREDENTIALS_FILE, 'utf8').then(JSON.parse),
-  readFile(API_TOKEN_FILE, 'utf8').then(value => value.trim())
-]);
+const apiToken = (await readFile(API_TOKEN_FILE, 'utf8')).trim();
 if (!apiToken) throw new Error('Token interno do knowledge-sync não configurado.');
 if (!OPENWEBUI_EMAIL || !OPENWEBUI_PASSWORD) throw new Error('Credencial administrativa do Open WebUI não configurada.');
 
@@ -36,8 +33,45 @@ let state = await loadState();
 let mutation = Promise.resolve();
 let persistence = Promise.resolve();
 const running = new Set();
+let googleCredentials = null;
+let googleCredentialsRaw = '';
+let googleCredentialsError = null;
 let googleToken = null;
 let openwebuiToken = null;
+
+async function refreshGoogleCredentials(required = false) {
+  try {
+    const raw = await readFile(GOOGLE_CREDENTIALS_FILE, 'utf8');
+    if (raw !== googleCredentialsRaw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.type !== 'service_account' || !parsed.client_email || !parsed.private_key) {
+        throw new Error('O JSON não representa uma Service Account válida.');
+      }
+      googleCredentials = parsed;
+      googleCredentialsRaw = raw;
+      googleCredentialsError = null;
+      googleToken = null;
+    }
+    return googleCredentials;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'EISDIR') {
+      googleCredentials = null;
+      googleCredentialsRaw = '';
+      googleCredentialsError = null;
+      googleToken = null;
+      if (!required) return null;
+      throw new Error('Configure a Service Account do Google Drive no painel administrativo.');
+    }
+    googleCredentials = null;
+    googleCredentialsRaw = '';
+    googleCredentialsError = error.message;
+    googleToken = null;
+    if (!required) return null;
+    throw new Error(`Credencial do Google Drive inválida: ${error.message}`);
+  }
+}
+
+await refreshGoogleCredentials(false);
 
 function withMutation(operation) {
   const next = mutation.then(operation, operation);
@@ -71,6 +105,7 @@ async function requestBody(request) {
 }
 
 async function getGoogleToken() {
+  await refreshGoogleCredentials(true);
   if (googleToken && googleToken.expiresAt > Date.now() + 60_000) return googleToken.value;
   const assertion = createServiceAccountAssertion(googleCredentials);
   const form = new URLSearchParams({
@@ -406,11 +441,24 @@ async function route(request, response, url) {
   if (!await authorize(request)) return json(response, 401, { error: 'Não autorizado.' });
 
   if (request.method === 'GET' && url.pathname === '/api/status') {
+    await refreshGoogleCredentials(false);
     return json(response, 200, {
-      configured: true,
-      serviceAccountEmail: googleCredentials.client_email,
+      configured: Boolean(googleCredentials),
+      serviceAccountEmail: googleCredentials?.client_email || null,
+      projectId: googleCredentials?.project_id || null,
+      credentialsError: googleCredentialsError,
       running: [...running],
       targetCount: state.targets.length
+    });
+  }
+  if (request.method === 'POST' && url.pathname === '/api/credentials/test') {
+    const credentials = await refreshGoogleCredentials(true);
+    await google('/drive/v3/files?pageSize=1&fields=files(id)&q=trashed%20%3D%20false');
+    return json(response, 200, {
+      configured: true,
+      serviceAccountEmail: credentials.client_email,
+      projectId: credentials.project_id || null,
+      testedAt: new Date().toISOString()
     });
   }
   if (request.method === 'GET' && url.pathname === '/api/knowledge-bases') {
@@ -432,6 +480,17 @@ async function route(request, response, url) {
     const knowledgeBaseId = url.searchParams.get('knowledgeBaseId');
     const history = knowledgeBaseId ? state.history.filter(item => item.knowledgeBaseId === knowledgeBaseId) : state.history;
     return json(response, 200, { history: history.slice(0, 100) });
+  }
+  if (request.method === 'POST' && url.pathname === '/api/targets/pause-all') {
+    await withMutation(async () => {
+      const now = new Date().toISOString();
+      for (const target of state.targets) {
+        target.enabled = false;
+        target.updatedAt = now;
+      }
+      await persist();
+    });
+    return json(response, 200, { paused: state.targets.length });
   }
 
   const match = url.pathname.match(/^\/api\/targets\/([A-Za-z0-9_-]+)(?:\/(run))?$/);
@@ -482,6 +541,7 @@ async function route(request, response, url) {
 }
 
 async function checkSchedules() {
+  if (!await refreshGoogleCredentials(false)) return;
   for (const target of state.targets) {
     if (isTargetDue(target) && !running.has(target.knowledgeBaseId)) {
       try { runTarget(target.knowledgeBaseId, 'schedule'); }

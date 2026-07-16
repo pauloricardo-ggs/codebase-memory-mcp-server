@@ -1,14 +1,8 @@
-# Configurar o Google Drive para o Open WebUI
+# Configurar o Google Drive para sincronização
 
-Este guia prepara um projeto no Google Cloud para dois recursos complementares: importar arquivos sob demanda pelo Google Picker e sincronizar automaticamente pastas do Drive com Knowledge Bases pelo painel administrativo.
+Este guia prepara um projeto no Google Cloud e conecta pastas do Drive a Knowledge Bases pelo painel administrativo. A instalação não solicita credenciais: o arquivo JSON da Service Account é enviado posteriormente pelo navegador.
 
-Ao final, você terá as três credenciais solicitadas pelo `install.sh`:
-
-- um OAuth Client ID terminado em `.apps.googleusercontent.com`;
-- uma API Key do Google Picker, normalmente iniciada por `AIza`.
-- um arquivo JSON de Service Account usado exclusivamente pelo worker de sincronização.
-
-Não informe o OAuth Client Secret ao instalador. A importação interativa utiliza somente o Client ID e a API Key. O worker usa a Service Account com acesso somente de leitura às pastas explicitamente compartilhadas com ela.
+OAuth Client ID e API Key do Google Picker não são necessários para a sincronização automática. Eles pertencem ao seletor manual nativo do Open WebUI e são tratados separadamente na seção opcional deste guia.
 
 ---
 
@@ -16,161 +10,38 @@ Não informe o OAuth Client Secret ao instalador. A importação interativa util
 <summary style="font-size: 1.5em; font-weight: bold;">Pré-requisitos</summary>
 
 - Uma conta Google com permissão para criar ou administrar um projeto no [Google Cloud Console](https://console.cloud.google.com/).
-- A URL que os usuários realmente usam para acessar o Open WebUI.
-- Para produção, uma URL HTTPS com domínio, como `https://chat.exemplo.com`.
-
-O Google não aceita IP bruto como origem JavaScript, exceto endereços de `localhost`, e só permite HTTP para desenvolvimento local. Não use URLs internas como `http://open-webui:8080`. Se houver proxy reverso, utilize a URL pública vista pelo navegador.
-
-Exemplos:
-
-| Ambiente | URL usada na configuração |
-| --- | --- |
-| Produção | `https://chat.exemplo.com` |
-| Desenvolvimento local | `http://localhost:3000` |
-
-Considere a URL completa: protocolo, domínio e porta precisam corresponder. `https://chat.exemplo.com` e `http://chat.exemplo.com:3000` são origens diferentes.
+- Acesso ao painel administrativo da instalação.
+- Permissão para compartilhar no Google Drive as pastas que serão sincronizadas.
 
 </details>
 
 ---
 
 <details>
-<summary style="font-size: 1.5em; font-weight: bold;">Criar ou selecionar um projeto</summary>
+<summary style="font-size: 1.5em; font-weight: bold;">Criar o projeto e habilitar a API</summary>
 
 1. Acesse o [Google Cloud Console](https://console.cloud.google.com/).
-2. Use o seletor de projetos no topo da página.
-3. Se necessário, clique em **Novo projeto**, informe um nome e conclua a criação.
-4. Confirme que o projeto correto permanece selecionado antes de continuar.
+2. Use o seletor no topo para criar ou escolher um projeto.
+3. Abra **APIs e serviços → Biblioteca**.
+4. Procure por **Google Drive API**, abra o resultado e clique em **Ativar**.
 
-Use um projeto separado para desenvolvimento/teste e outro para produção quando a integração for destinada a usuários externos.
-
-</details>
-
----
-
-<details>
-<summary style="font-size: 1.5em; font-weight: bold;">Habilitar as APIs</summary>
-
-No projeto selecionado:
-
-1. Abra **APIs e serviços → Biblioteca**.
-2. Procure por **Google Drive API**, abra o resultado e clique em **Ativar**.
-3. Volte à biblioteca, procure por **Google Picker API** e clique em **Ativar**.
-
-As duas APIs devem estar ativas no mesmo projeto que fornecerá o OAuth Client ID e a API Key.
+Para a sincronização automática, somente a Google Drive API é necessária. Ative a Google Picker API apenas se também for usar o seletor manual opcional.
 
 </details>
 
 ---
 
 <details>
-<summary style="font-size: 1.5em; font-weight: bold;">Configurar a tela de consentimento OAuth</summary>
+<summary style="font-size: 1.5em; font-weight: bold;">Criar a Service Account</summary>
 
-1. Abra **Google Auth Platform → Branding**.
-2. Caso seja a primeira configuração, clique em **Get started**.
-3. Informe pelo menos:
-   - nome do aplicativo, por exemplo `Open WebUI`;
-   - e-mail de suporte;
-   - e-mail de contato do desenvolvedor.
-4. Salve a configuração.
-5. Abra **Google Auth Platform → Audience** e escolha o público:
-   - **Internal**: recomendado quando todos os usuários pertencem à mesma organização Google Workspace;
-   - **External**: necessário para contas fora da organização.
-6. Para um aplicativo **External** em modo **Testing**, adicione em **Test users** todos os e-mails que usarão o Google Drive no Open WebUI.
-7. Abra **Google Auth Platform → Data Access**, clique em **Add or remove scopes** e adicione:
-
-```text
-https://www.googleapis.com/auth/drive.readonly
-https://www.googleapis.com/auth/drive.file
-```
-
-A versão `v0.10.2` do Open WebUI solicita esses dois escopos. O `drive.readonly` permite visualizar e baixar arquivos do Drive e é classificado pelo Google como escopo restrito; o `drive.file` concede acesso por arquivo por meio do Picker.
-
-Para testes limitados, mantenha o aplicativo em **Testing** e cadastre explicitamente os usuários. Nesse modo, as autorizações dos usuários de teste expiram após sete dias e precisam ser concedidas novamente. Para disponibilizar um aplicativo **External** em produção usando `drive.readonly`, avalie e conclua o processo de verificação exigido pelo Google. Aplicativos **Internal** são limitados às contas da organização e normalmente não precisam dessa verificação pública.
-
-</details>
-
----
-
-<details>
-<summary style="font-size: 1.5em; font-weight: bold;">Criar o OAuth Client ID</summary>
-
-1. Abra **Google Auth Platform → Clients**.
-2. Clique em **Create client**.
-3. Em **Application type**, selecione **Web application**.
-4. Informe um nome, por exemplo `Open WebUI Web`.
-5. Em **Authorized JavaScript origins**, adicione a URL pública do Open WebUI, sem caminho:
-
-```text
-https://chat.exemplo.com
-```
-
-Se a porta fizer parte da URL pública, inclua-a:
-
-```text
-https://chat.exemplo.com:3000
-```
-
-6. Por compatibilidade com as instruções do Open WebUI, adicione a mesma URL em **Authorized redirect URIs**.
-7. Clique em **Create**.
-8. Copie o valor de **Client ID**. Esse é o valor que será informado ao instalador.
-
-Não copie nem informe o **Client Secret**. Ele não é utilizado por essa integração.
-
-</details>
-
----
-
-<details>
-<summary style="font-size: 1.5em; font-weight: bold;">Criar e restringir a API Key</summary>
-
-1. Abra **APIs e serviços → Credenciais**.
-2. Clique em **Criar credenciais → Chave de API**.
-3. Copie a chave criada e abra **Editar chave de API**.
-4. Em **Restrições do aplicativo**, selecione **Sites** ou **Referenciadores HTTP**.
-5. Adicione a origem e a origem com caminho curinga. Exemplo:
-
-```text
-https://chat.exemplo.com
-https://chat.exemplo.com/*
-```
-
-Para desenvolvimento local:
-
-```text
-http://localhost:3000
-http://localhost:3000/*
-```
-
-6. Em **Restrições de API**, selecione **Restringir chave**.
-7. Permita somente:
-   - Google Drive API;
-   - Google Picker API.
-8. Salve e aguarde alguns minutos para a configuração se propagar.
-
-A API Key é utilizada pelo navegador para abrir o Picker. As restrições de site e de API são necessárias para evitar que ela seja reutilizada por outra aplicação.
-
-</details>
-
----
-
-<details>
-<summary style="font-size: 1.5em; font-weight: bold;">Criar a Service Account para sincronização</summary>
-
-No mesmo projeto Google Cloud:
-
-1. Abra **IAM e administrador → Contas de serviço**.
+1. No projeto, abra **IAM e administrador → Contas de serviço**.
 2. Clique em **Criar conta de serviço**.
 3. Informe um nome, por exemplo `openwebui-knowledge-sync`.
 4. Não conceda papéis de IAM no projeto; o acesso aos documentos será dado diretamente no Drive.
 5. Abra a conta criada e acesse **Chaves → Adicionar chave → Criar nova chave**.
 6. Selecione **JSON** e guarde o arquivo baixado em um local protegido.
-7. Copie o e-mail da conta, terminado em `iam.gserviceaccount.com`.
-8. No Google Drive, compartilhe cada pasta que poderá ser sincronizada com esse e-mail como **Leitor**.
 
-O worker enxerga somente arquivos e pastas acessíveis à Service Account. Compartilhar uma pasta raiz normalmente concede leitura aos seus descendentes. Não publique o JSON, não o envie para o Git e não conceda permissão de edição.
-
-O instalador copia o JSON para `data/secrets/google-drive-service-account.json`, aplica permissão `0600` e o monta somente no container `knowledge-sync`.
+O worker enxerga somente arquivos e pastas acessíveis à Service Account. Não publique o JSON, não o envie para o Git e não conceda permissão de edição.
 
 </details>
 
@@ -185,29 +56,29 @@ Execute normalmente:
 ./install.sh
 ```
 
-Quando o instalador perguntar:
+O instalador não faz perguntas sobre Google Drive. Ele gera somente o token interno entre o painel e o worker, constrói o serviço `knowledge-sync` e o inicia junto aos demais containers.
 
-```text
-Deseja habilitar o Google Drive? [s/N]:
-```
+Sem credencial, o worker responde ao painel, mas não consulta o Google nem executa agendamentos. Não é necessário reinstalar ou reiniciar containers depois de enviar ou substituir o JSON.
 
-Responda `s` e informe:
+</details>
 
-1. o OAuth Client ID criado na etapa 4;
-2. a API Key criada na etapa 5.
-3. o caminho local do JSON da Service Account criado na etapa anterior.
+---
 
-O instalador salva a configuração em `data/secrets/openwebui.env`, com permissão restrita, e disponibiliza ao container:
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Enviar a Service Account pelo painel</summary>
 
-```dotenv
-ENABLE_GOOGLE_DRIVE_INTEGRATION=true
-GOOGLE_DRIVE_CLIENT_ID=seu-client-id.apps.googleusercontent.com
-GOOGLE_DRIVE_API_KEY=sua-api-key
-```
+1. Em qualquer computador com acesso ao servidor, abra `http://<servidor>:8787/admin/`.
+2. Entre em **Bases e Drive**.
+3. Clique em **Configurar Google Drive**.
+4. Use **Arquivo da Service Account** para selecionar o JSON baixado do Google Cloud. Como alternativa avançada, abra **Ou cole o conteúdo do JSON**.
+5. Confira o e-mail e o projeto mostrados na prévia e clique em **Salvar credencial**.
+6. Clique em **Testar conexão**.
+7. Copie o e-mail da Service Account exibido no painel.
+8. No Google Drive, compartilhe cada pasta desejada com esse e-mail como **Leitor**.
 
-Não grave valores reais no Git, no README ou em arquivos de exemplo.
+O upload parte do navegador usado para acessar o painel; o servidor não precisa ter interface gráfica. O painel salva o arquivo em `data/secrets/knowledge-sync/google-drive-service-account.json`, com permissão `0600`. Somente esse subdiretório é montado, para leitura, no worker; os demais segredos do sistema ficam fora do alcance dele. A chave privada nunca é devolvida pela API nem exibida novamente.
 
-Quando a integração é habilitada, o instalador também ativa o profile `google-drive` do Docker Compose, gera um token interno e inicia o container `knowledge-sync`. Se a integração for desabilitada numa reinstalação, o profile deixa de ser ativado e as credenciais do worker são removidas. O histórico dos vínculos permanece em `data/knowledge-sync/` para permitir recuperação administrativa.
+A opção **Remover** apaga o arquivo do servidor e pausa os vínculos existentes, preservando os arquivos já enviados às bases.
 
 </details>
 
@@ -217,17 +88,15 @@ Quando a integração é habilitada, o instalador também ativa o profile `googl
 <summary style="font-size: 1.5em; font-weight: bold;">Vincular pastas às Knowledge Bases</summary>
 
 1. Crie as Knowledge Bases desejadas no Open WebUI.
-2. Se necessário, associe cada modelo somente à sua respectiva base.
-3. Abra o painel administrativo em `http://<servidor>:8787/admin/`.
-4. Entre em **Bases e Drive**.
-5. Localize a Knowledge Base e clique em **Vincular pastas**.
-6. Selecione uma ou mais pastas acessíveis à Service Account.
-7. Defina o intervalo, mantenha a rotina ativada e salve.
-8. Use **Sincronizar agora** para antecipar a primeira execução e acompanhe o histórico.
+2. Associe cada modelo somente à sua respectiva base.
+3. Em **Bases e Drive**, localize a Knowledge Base e clique em **Vincular pastas**.
+4. Selecione uma ou mais pastas acessíveis à Service Account.
+5. Defina o intervalo, mantenha a rotina ativada e salve.
+6. Use **Sincronizar agora** para antecipar a primeira execução e acompanhe o histórico.
 
 Use **Pausar** para interromper novas verificações sem remover conteúdo. A ação **Desvincular** remove da Knowledge Base os arquivos enviados pelo worker e preserva os originais no Drive.
 
-Cada vínculo é isolado pelo ID da Knowledge Base. Arquivos da Pasta A enviados para a Base A não entram na Base B. Dentro da base, o worker cria a estrutura `Google Drive (gerenciado)/<pasta>--<id>/` e registra somente os arquivos que ele próprio enviou. Exclusões no Drive removem apenas esses arquivos gerenciados; uploads manuais da base são preservados.
+Cada vínculo é isolado pelo ID da Knowledge Base. Arquivos da Pasta A enviados para a Base A não entram na Base B. Dentro da base, o worker cria a estrutura `Google Drive (gerenciado)/<pasta>--<id>/` e registra somente os arquivos que ele próprio enviou. Exclusões no Drive removem apenas esses arquivos gerenciados; uploads manuais são preservados.
 
 O fluxo é unidirecional: alterações feitas no Drive chegam ao Open WebUI. Alterar ou remover arquivos diretamente na área gerenciada da base não modifica o Drive e pode ser revertido na próxima sincronização.
 
@@ -236,26 +105,46 @@ O fluxo é unidirecional: alterações feitas no Drive chegam ao Open WebUI. Alt
 ---
 
 <details>
-<summary style="font-size: 1.5em; font-weight: bold;">Validar no Open WebUI</summary>
+<summary style="font-size: 1.5em; font-weight: bold;">Validar a sincronização</summary>
 
-1. Acesse a URL pública do Open WebUI.
-2. Entre com a conta administrativa.
-3. Abra **Admin Panel → Settings → Documents**.
-4. Confirme que **Google Drive** está habilitado. Em uma reinstalação, uma configuração persistida anteriormente pelo Open WebUI pode precisar ser habilitada manualmente nesse painel.
-5. Abra um chat e use o menu de anexos para selecionar **Google Drive**.
-6. Autorize a conta Google e selecione um arquivo de teste.
-7. Confirme que o arquivo é importado e processado pelo Open WebUI.
+1. No painel, use **Testar conexão**.
+2. Vincule uma pasta pequena a uma Knowledge Base de teste.
+3. Clique em **Sincronizar agora** e abra **Histórico**.
+4. Acesse a Knowledge Base no Open WebUI e confirme que os arquivos aparecem na área gerenciada.
+5. Edite um arquivo no Drive, sincronize novamente e confirme a atualização.
 
-Para verificar somente a presença das variáveis, sem exibir as credenciais:
+</details>
+
+---
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Opcional: Picker manual nativo do Open WebUI</summary>
+
+O Picker permite que usuários importem arquivos manualmente pelo menu de anexos. Ele é independente da sincronização e exige OAuth Client ID e API Key.
+
+Na versão `v0.10.2`, o toggle é persistente, mas o Client ID e a API Key são lidos somente na inicialização. Eles não são aplicados em **Bases e Drive**, pois recriar containers pelo navegador exigiria expor controle privilegiado do Docker ao painel.
+
+Se quiser habilitar esse recurso opcional:
+
+1. Ative **Google Picker API** no mesmo projeto.
+2. Configure a tela de consentimento em **Google Auth Platform** e adicione os escopos `drive.readonly` e `drive.file`.
+3. Crie um OAuth Client do tipo **Web application** e cadastre a origem usada para acessar o Open WebUI.
+4. Crie uma API Key restrita ao site e às APIs Google Drive e Google Picker.
+5. Adicione a `data/secrets/openwebui.env`:
+
+```dotenv
+ENABLE_GOOGLE_DRIVE_INTEGRATION=true
+GOOGLE_DRIVE_CLIENT_ID=seu-client-id.apps.googleusercontent.com
+GOOGLE_DRIVE_API_KEY=sua-api-key
+```
+
+6. Recrie apenas o Open WebUI:
 
 ```bash
-docker compose exec -T open-webui sh -c '
-  test "$ENABLE_GOOGLE_DRIVE_INTEGRATION" = true &&
-  test -n "$GOOGLE_DRIVE_CLIENT_ID" &&
-  test -n "$GOOGLE_DRIVE_API_KEY" &&
-  echo "Google Drive configurado"
-'
+docker compose up -d --force-recreate open-webui
 ```
+
+Não informe nem armazene o OAuth Client Secret; o Picker não o utiliza.
 
 </details>
 
@@ -266,17 +155,13 @@ docker compose exec -T open-webui sh -c '
 
 | Sintoma | Verificação |
 | --- | --- |
-| `origin_mismatch` | A origem cadastrada deve ter exatamente o mesmo protocolo, domínio e porta exibidos no navegador. Não inclua caminho em **Authorized JavaScript origins**. |
-| `redirect_uri_mismatch` | Cadastre em **Authorized redirect URIs** a mesma URL pública usada pelo Open WebUI. |
-| `access_denied` ou usuário não autorizado | Se o app estiver em **Testing**, adicione a conta em **Audience → Test users**. Se estiver **Internal**, use uma conta da organização. |
-| Aviso de aplicativo não verificado | Confirme que o usuário é um test user ou conclua a verificação para uso externo em produção. O escopo `drive.readonly` é restrito. |
-| Erro de API Key ou referenciador | Confirme as restrições de site, incluindo protocolo, porta e a entrada terminada em `/*`. |
-| O Picker abre, mas o download falha | Confirme que a Google Drive API está ativa, que os dois escopos foram declarados e que o usuário possui acesso ao arquivo. |
-| A opção Google Drive não aparece | Execute novamente o instalador, valide as variáveis com o comando acima e confira o toggle em **Admin Panel → Settings → Documents**. |
-| A pasta não aparece em **Bases e Drive** | Compartilhe-a como Leitor com o e-mail da Service Account exibido no painel. Também é possível informar diretamente o folder ID. |
-| Worker indisponível | Confirme que `COMPOSE_PROFILES=google-drive` está no `.env` e consulte `docker compose logs knowledge-sync`. |
+| JSON recusado | Confirme que foi baixado como chave JSON de uma Service Account e contém `type`, `client_email` e `private_key`. |
+| Teste de conexão falha | Confirme que a Google Drive API está ativa no projeto e substitua uma chave revogada. |
+| A pasta não aparece | Compartilhe-a como Leitor com o e-mail exibido no painel. Também é possível informar diretamente o folder ID. |
+| Worker indisponível | Consulte `docker compose ps knowledge-sync` e `docker compose logs knowledge-sync`. Ele é iniciado automaticamente pela instalação. |
 | Sincronização falha ao autenticar no Open WebUI | Execute novamente o instalador para recriar o worker com a credencial administrativa atual. |
-| Origem vazia | O worker preserva os arquivos existentes quando uma origem previamente preenchida retorna vazia. Verifique permissões e a disponibilidade do Drive. |
+| Origem vazia | O worker preserva os arquivos existentes quando uma origem previamente preenchida retorna vazia. Verifique permissões e disponibilidade do Drive. |
+| Picker manual não aparece | Configure as variáveis da seção opcional e recrie o serviço `open-webui`. |
 
 </details>
 
@@ -285,14 +170,11 @@ docker compose exec -T open-webui sh -c '
 <details>
 <summary style="font-size: 1.5em; font-weight: bold;">Referências oficiais</summary>
 
-- [Integração Google Drive no Open WebUI](https://docs.openwebui.com/features/chat-conversations/rag/#google-drive-integration)
-- [Código do Picker utilizado pelo Open WebUI v0.10.2](https://github.com/open-webui/open-webui/blob/v0.10.2/src/lib/utils/google-drive-picker.ts)
-- [Configurar o Google Picker para uma aplicação web](https://developers.google.com/workspace/drive/picker/guides/web-picker)
-- [Configurar OAuth 2.0 para aplicações web no navegador](https://developers.google.com/identity/protocols/oauth2/javascript-implicit-flow)
-- [Escopos da Google Drive API](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
-- [Gerenciar e restringir API Keys](https://cloud.google.com/docs/authentication/api-keys)
-- [Configurar o público do aplicativo OAuth](https://support.google.com/cloud/answer/15549945)
+- [Google Drive API](https://developers.google.com/workspace/drive/api/guides/about-sdk)
 - [Criar e gerenciar Service Accounts](https://cloud.google.com/iam/docs/service-accounts-create)
+- [Criar e excluir chaves de Service Account](https://cloud.google.com/iam/docs/keys-create-delete)
 - [Compartilhar arquivos e pastas no Google Drive](https://support.google.com/drive/answer/2494822)
+- [Integração Google Drive no Open WebUI](https://docs.openwebui.com/features/chat-conversations/rag/#google-drive-integration)
+- [Configurar o Google Picker para uma aplicação web](https://developers.google.com/workspace/drive/picker/guides/web-picker)
 
 </details>

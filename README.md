@@ -168,9 +168,9 @@ O `MCP Admin` usa a credencial Sistema/Playground e, portanto, possui acesso tot
 
 A credencial administrativa e o `WEBUI_SECRET_KEY` ficam em `data/secrets/openwebui.env`, fora do Git. Os dados de Ollama, Docling e Open WebUI persistem em volumes Docker próprios.
 
-Quando o Google Drive é habilitado no instalador, o mesmo arquivo secreto recebe `ENABLE_GOOGLE_DRIVE_INTEGRATION`, `GOOGLE_DRIVE_CLIENT_ID` e `GOOGLE_DRIVE_API_KEY`. O `env_file` do container disponibiliza essas variáveis ao Open WebUI para importação pelo Picker.
+O instalador sempre prepara o container leve `knowledge-sync`, mas não solicita credenciais do Google Drive. Sem uma conta de serviço e sem vínculos, ele permanece ocioso. Toda a configuração da sincronização é feita em **Bases e Drive** no painel administrativo: upload ou colagem do JSON, teste de conexão, e-mail para compartilhamento, pastas, intervalo, execução manual, pausa, status e histórico.
 
-O instalador também ativa o container opcional `knowledge-sync`, guarda a Service Account em `data/secrets/google-drive-service-account.json` e habilita **Bases e Drive** no painel administrativo. Nessa seção, cada Knowledge Base pode ser vinculada a uma ou mais pastas, com intervalo, execução manual, pausa, status e histórico próprios. O worker envia somente as mudanças para a base vinculada; extração e embeddings continuam sendo executados pelo Open WebUI, Docling e Ollama.
+Cada Knowledge Base pode ser vinculada a uma ou mais pastas. O worker envia somente as mudanças para a base escolhida; extração e embeddings continuam sendo executados pelo Open WebUI, Docling e Ollama. Consulte [Configurar o Google Drive](docs/google-drive.md) para criar a Service Account e concluir a configuração pelo navegador.
 
 </details>
 

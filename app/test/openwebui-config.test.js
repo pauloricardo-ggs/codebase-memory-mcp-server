@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 const root = path.resolve(import.meta.dirname, '../..');
 const execFileAsync = promisify(execFile);
 
-test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker opcional persistentes', async () => {
+test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker permanente', async () => {
   const compose = await readFile(path.join(root, 'compose.yaml'), 'utf8');
   for (const service of ['ollama:', 'docling:', 'open-webui:', 'openwebui-bootstrap:']) {
     assert.match(compose, new RegExp(`^  ${service}`, 'm'));
@@ -23,7 +23,8 @@ test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker opcional pe
   assert.match(compose, /ollama-data:/);
   assert.match(compose, /openwebui-data:/);
   assert.match(compose, /^  knowledge-sync:/m);
-  assert.match(compose, /profiles: \["google-drive"\]/);
+  assert.doesNotMatch(compose, /profiles: \["google-drive"\]/);
+  assert.match(compose, /KNOWLEDGE_SYNC_ENABLED: "true"/);
   assert.match(compose, /GOOGLE_APPLICATION_CREDENTIALS: \/run\/secrets\/google-drive-service-account.json/);
   assert.match(compose, /KNOWLEDGE_SYNC_URL: http:\/\/knowledge-sync:3002/);
 });
@@ -52,23 +53,25 @@ test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF intern
   assert.match(browser, /Vincular pastas/);
   assert.match(browser, /run-knowledge-sync/);
   assert.match(browser, /delete-knowledge-sync/);
+  assert.match(browser, /drive-credentials-file/);
+  assert.match(browser, /save-drive-credentials/);
+  assert.match(browser, /test-drive-credentials/);
   assert.match(server, /url\.pathname\.startsWith\('\/api\/knowledge-sync'\)/);
   assert.match(server, /KNOWLEDGE_SYNC_TOKEN_FILE/);
+  assert.match(server, /GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE/);
+  assert.match(server, /validateGoogleServiceAccount/);
 });
 
 test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   const install = await readFile(path.join(root, 'install.sh'), 'utf8');
   assert.match(install, /OLLAMA_CHAT_MODEL='qwen3:14b'/);
   assert.match(install, /ask_ollama_model/);
-  assert.match(install, /ask_google_drive_integration/);
-  assert.match(install, /Deseja habilitar o Google Drive/);
-  assert.match(install, /OAuth Client ID do Google/);
-  assert.match(install, /API Key do Google Picker/);
-  assert.match(install, /ENABLE_GOOGLE_DRIVE_INTEGRATION/);
-  assert.match(install, /GOOGLE_DRIVE_CLIENT_ID/);
-  assert.match(install, /GOOGLE_DRIVE_API_KEY/);
-  assert.match(install, /JSON da Service Account para sincronização/);
-  assert.match(install, /COMPOSE_PROFILES/);
+  assert.doesNotMatch(install, /ask_google_drive_integration/);
+  assert.doesNotMatch(install, /Deseja habilitar o Google Drive/);
+  assert.doesNotMatch(install, /OAuth Client ID do Google/);
+  assert.doesNotMatch(install, /API Key do Google Picker/);
+  assert.doesNotMatch(install, /JSON da Service Account para sincronização/);
+  assert.doesNotMatch(install, /COMPOSE_PROFILES/);
   assert.match(install, /restart_and_validate_knowledge_sync_command/);
   assert.match(install, /E-mail administrativo/);
   assert.match(install, /mínimo de 6 caracteres/);
@@ -88,33 +91,51 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   }
 });
 
-test('instalador protege a Service Account e o token interno do worker', async () => {
+test('instalador cria e protege somente o token interno do worker', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-knowledge-sync-install-'));
   try {
     await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
-    const source = path.join(temporaryRoot, 'service-account-source.json');
-    const credentials = {
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      create_local_structure
+      configure_google_drive_sync
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+
+    const token = path.join(temporaryRoot, 'data/secrets/knowledge-sync/knowledge-sync-token');
+    assert.match(await readFile(token, 'utf8'), /^[a-f0-9]{64}\n$/);
+    if (process.platform !== 'win32') {
+      assert.equal((await stat(token)).mode & 0o777, 0o600);
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('reinstalação migra segredos legados do worker para o subdiretório isolado', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-knowledge-sync-migration-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await mkdir(path.join(temporaryRoot, 'data/secrets'), { recursive: true });
+    const legacyToken = `${'a'.repeat(64)}\n`;
+    const legacyCredentials = JSON.stringify({
       type: 'service_account',
       client_email: 'sync@example.iam.gserviceaccount.com',
       private_key: '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n'
-    };
-    await writeFile(source, JSON.stringify(credentials));
+    });
+    await writeFile(path.join(temporaryRoot, 'data/secrets/knowledge-sync-token'), legacyToken);
+    await writeFile(path.join(temporaryRoot, 'data/secrets/google-drive-service-account.json'), legacyCredentials);
+
     await execFileAsync('bash', ['-c', `
       source "$1"
-      ENABLE_GOOGLE_DRIVE_INTEGRATION=true
-      GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE="$2"
       create_local_structure
       configure_google_drive_sync
-    `, 'test', path.join(temporaryRoot, 'install.sh'), source]);
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
 
-    const copied = path.join(temporaryRoot, 'data/secrets/google-drive-service-account.json');
-    const token = path.join(temporaryRoot, 'data/secrets/knowledge-sync-token');
-    assert.deepEqual(JSON.parse(await readFile(copied, 'utf8')), credentials);
-    assert.match(await readFile(token, 'utf8'), /^[a-f0-9]{64}\n$/);
-    if (process.platform !== 'win32') {
-      assert.equal((await stat(copied)).mode & 0o777, 0o600);
-      assert.equal((await stat(token)).mode & 0o777, 0o600);
-    }
+    const isolated = path.join(temporaryRoot, 'data/secrets/knowledge-sync');
+    assert.equal(await readFile(path.join(isolated, 'knowledge-sync-token'), 'utf8'), legacyToken);
+    assert.equal(await readFile(path.join(isolated, 'google-drive-service-account.json'), 'utf8'), legacyCredentials);
+    await assert.rejects(readFile(path.join(temporaryRoot, 'data/secrets/knowledge-sync-token')), { code: 'ENOENT' });
+    await assert.rejects(readFile(path.join(temporaryRoot, 'data/secrets/google-drive-service-account.json')), { code: 'ENOENT' });
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -189,7 +210,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
     });
     assert.equal(
       await readFile(path.join(temporaryRoot, 'data/secrets/openwebui.env'), 'utf8'),
-      'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=novo@example.com\nWEBUI_ADMIN_PASSWORD=senha-nova\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=segredo-preservado\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\n'
+      'CUSTOM_OPENWEBUI_SETTING=preservar\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\nWEBUI_ADMIN_EMAIL=novo@example.com\nWEBUI_ADMIN_PASSWORD=senha-nova\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=segredo-preservado\n'
     );
   } finally {
     await new Promise(resolve => server.close(resolve));
@@ -197,7 +218,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
   }
 });
 
-test('configuração desabilitada não mantém credenciais do Google Drive no container', async () => {
+test('reinstalação preserva configuração legada do Picker sem gerenciá-la no instalador', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-openwebui-gdrive-'));
   try {
     await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
@@ -209,15 +230,12 @@ test('configuração desabilitada não mantém credenciais do Google Drive no co
 
     await execFileAsync('bash', ['-c', `
       source "$1"
-      ENABLE_GOOGLE_DRIVE_INTEGRATION=false
-      GOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com
-      GOOGLE_DRIVE_API_KEY=api-key
       write_openwebui_environment admin@example.com senha-secreta Admin webui-secret
     `, 'test', path.join(temporaryRoot, 'install.sh')]);
 
     assert.equal(
       await readFile(path.join(temporaryRoot, 'data/secrets/openwebui.env'), 'utf8'),
-      'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=admin@example.com\nWEBUI_ADMIN_PASSWORD=senha-secreta\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=webui-secret\nENABLE_GOOGLE_DRIVE_INTEGRATION=false\n'
+      'CUSTOM_OPENWEBUI_SETTING=preservar\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente-antigo.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-antiga\nWEBUI_ADMIN_EMAIL=admin@example.com\nWEBUI_ADMIN_PASSWORD=senha-secreta\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=webui-secret\n'
     );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

@@ -109,12 +109,12 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const credentialsFile = path.join(temporaryRoot, 'service-account.json');
   const tokenFile = path.join(temporaryRoot, 'api-token');
-  await writeFile(credentialsFile, JSON.stringify({
+  const credentials = {
     type: 'service_account',
     client_email: 'sync@example.iam.gserviceaccount.com',
     private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
     token_uri: `${googleUrl}/token`
-  }));
+  };
   await writeFile(tokenFile, `${apiToken}\n`);
 
   const port = await freePort();
@@ -141,7 +141,17 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
 
   try {
     await waitFor(`${workerUrl}/health`);
-    let response = await fetch(`${workerUrl}/api/targets/kb-A`, {
+    let status = await fetch(`${workerUrl}/api/status`, { headers }).then(value => value.json());
+    assert.equal(status.configured, false);
+
+    await writeFile(credentialsFile, JSON.stringify(credentials));
+    let response = await fetch(`${workerUrl}/api/credentials/test`, { method: 'POST', headers });
+    assert.equal(response.status, 200, await response.text());
+    status = await fetch(`${workerUrl}/api/status`, { headers }).then(value => value.json());
+    assert.equal(status.configured, true);
+    assert.equal(status.serviceAccountEmail, credentials.client_email);
+
+    response = await fetch(`${workerUrl}/api/targets/kb-A`, {
       method: 'PUT',
       headers,
       body: JSON.stringify({ knowledgeBaseName: 'Base A', folders: [{ id: 'folder-A', name: 'Pasta A' }], intervalMinutes: 60 })
