@@ -249,7 +249,10 @@ ask_ollama_model() {
 
   while true; do
     read -r -p "Escolha [1-3, atual: ${OLLAMA_CHAT_MODEL}]: " choice
-    case "${choice:-1}" in
+    if [[ -z "$choice" ]]; then
+      break
+    fi
+    case "$choice" in
       1) OLLAMA_CHAT_MODEL='qwen3:14b'; break ;;
       2) OLLAMA_CHAT_MODEL='qwen3:30b'; break ;;
       3)

@@ -153,6 +153,23 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   }
 });
 
+test('Enter preserva o modelo Ollama já configurado na reinstalação', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-model-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await writeFile(path.join(temporaryRoot, '.env'), 'OLLAMA_CHAT_MODEL=gemma3:12b\n');
+    const selectionFile = path.join(temporaryRoot, 'selection');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      ask_ollama_model <<< $'\\n'
+      printf '%s\\n' "$OLLAMA_CHAT_MODEL" >"$2"
+    `, 'test', path.join(temporaryRoot, 'install.sh'), selectionFile]);
+    assert.equal(await readFile(selectionFile, 'utf8'), 'gemma3:12b\n');
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test('instalador seleciona múltiplas GPUs por índice e persiste os UUIDs no override', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-gpu-install-'));
   try {
