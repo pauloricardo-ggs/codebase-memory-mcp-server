@@ -147,7 +147,7 @@ services:
       start_period: 5s
 
   ollama:
-    image: ollama/ollama:${OLLAMA_VERSION:-0.12.3}
+    image: ollama/ollama:${OLLAMA_VERSION:-0.32.1}
     restart: unless-stopped
     volumes:
       - ollama-data:/root/.ollama
@@ -224,7 +224,7 @@ services:
     environment:
       OPENWEBUI_URL: http://open-webui:8080
       OLLAMA_URL: http://ollama:11434
-      OLLAMA_CHAT_MODEL: "${OLLAMA_CHAT_MODEL:-qwen3:14b}"
+      OLLAMA_CHAT_MODEL: "${OLLAMA_CHAT_MODEL:-gemma4:e2b}"
       OLLAMA_EMBEDDING_MODEL: bge-m3
       MCP_ADMIN_URL: http://proxy:8080/mcp
       MCP_SYSTEM_TOKEN_FILE: /run/cbm-secrets/mcp-system-token

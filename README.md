@@ -68,7 +68,7 @@ chmod +x install.sh
 Durante a instalação, informe:
 
 - o limite de memória do Codebase Memory;
-- o modelo Ollama que será baixado (`qwen3:14b` por padrão);
+- o modelo Ollama que será baixado (`gemma4:e2b` por padrão, com `gemma4:e4b` e um identificador personalizado como alternativas);
 - o e-mail administrativo;
 - uma senha administrativa com pelo menos 6 caracteres.
 
@@ -266,7 +266,8 @@ WORKSPACE_TIMEZONE=America/Maceio
 REPOSITORY_SYNC_CONCURRENCY=3
 ADMIN_EMAIL=joao@exemplo.com
 ADMIN_USERNAME=joao@exemplo.com
-OLLAMA_CHAT_MODEL=qwen3:14b
+OLLAMA_VERSION=0.32.1
+OLLAMA_CHAT_MODEL=gemma4:e2b
 OLLAMA_GPU_MODE=all
 OLLAMA_GPU_DEVICE_IDS=
 ```
@@ -281,10 +282,10 @@ As opções mais comuns são:
 | `OPENWEBUI_PORT` | Porta pública do Open WebUI |
 | `WORKSPACE_TIMEZONE` | Fuso usado nos agendamentos |
 | `REPOSITORY_SYNC_CONCURRENCY` | Quantidade de sincronizações simultâneas, entre 1 e 20 |
-| `OLLAMA_CHAT_MODEL` | Modelo baixado pelo instalador; padrão `qwen3:14b` |
+| `OLLAMA_CHAT_MODEL` | Modelo baixado pelo instalador; padrão `gemma4:e2b` |
 | `OLLAMA_GPU_MODE` | Aceleração do Ollama: `cpu`, `all` ou `selected` |
 | `OLLAMA_GPU_DEVICE_IDS` | UUIDs NVIDIA separados por vírgula quando o modo é `selected` |
-| `OLLAMA_VERSION` | Tag da imagem Docker do Ollama |
+| `OLLAMA_VERSION` | Tag da imagem Docker do Ollama; padrão `0.32.1` |
 | `DOCLING_VERSION` | Tag da imagem Docker do Docling Serve |
 
 Execute novamente `./install.sh` depois de alterar configurações que exijam a recriação do ambiente.

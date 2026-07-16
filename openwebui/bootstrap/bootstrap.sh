@@ -6,7 +6,7 @@ set -eu
 : "${OLLAMA_URL:?OLLAMA_URL não configurada}"
 : "${WEBUI_ADMIN_EMAIL:?WEBUI_ADMIN_EMAIL não configurado}"
 : "${WEBUI_ADMIN_PASSWORD:?WEBUI_ADMIN_PASSWORD não configurado}"
-: "${OLLAMA_CHAT_MODEL:=qwen3:14b}"
+: "${OLLAMA_CHAT_MODEL:=gemma4:e2b}"
 : "${OLLAMA_EMBEDDING_MODEL:=bge-m3}"
 : "${MCP_ADMIN_URL:?MCP_ADMIN_URL não configurada}"
 : "${MCP_SYSTEM_TOKEN_FILE:?MCP_SYSTEM_TOKEN_FILE não configurado}"
@@ -35,7 +35,7 @@ pull_model() {
   echo "Garantindo modelo Ollama: $model"
   curl -fsS "$OLLAMA_URL/api/pull" \
     -H 'content-type: application/json' \
-    -d "$(jq -cn --arg model "$model" '{name:$model,stream:false}')" >/dev/null
+    -d "$(jq -cn --arg model "$model" '{model:$model,stream:false}')" >/dev/null
 }
 
 wait_for "Ollama" "$OLLAMA_URL/api/tags"

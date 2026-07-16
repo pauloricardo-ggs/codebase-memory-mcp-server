@@ -2,7 +2,7 @@
   "models": [
     {
       "id": "business-model-sample",
-      "base_model_id": "qwen3:14b",
+      "base_model_id": "gemma4:e2b",
       "name": "Business Model Sample",
       "is_active": true,
       "access_grants": [],
@@ -26,7 +26,7 @@
     },
     {
       "id": "code-model-sample",
-      "base_model_id": "qwen3:14b",
+      "base_model_id": "gemma4:e2b",
       "name": "Code Model Sample",
       "is_active": true,
       "access_grants": [],

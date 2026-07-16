@@ -61,7 +61,7 @@ test('presets de exemplo selecionam o padrão e carregam parâmetros e integraç
   const manifest = JSON.parse(await readFile(path.join(root, 'openwebui/bootstrap/models.json'), 'utf8'));
   assert.deepEqual(manifest.models.map(model => model.id), ['business-model-sample', 'code-model-sample']);
   for (const model of manifest.models) {
-    assert.equal(model.base_model_id, 'qwen3:14b');
+    assert.equal(model.base_model_id, 'gemma4:e2b');
     assert.equal(model.params.num_ctx, 32768);
     assert.equal(model.params.function_calling, 'native');
   }
@@ -124,9 +124,14 @@ test('painel confirma workspace com Enter e permite indexar o workspace aberto',
   assert.match(server, /parts\[2\] === 'index'.*request\.method === 'POST'/);
 });
 
-test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
+test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato atual', async () => {
   const install = await readFile(path.join(root, 'install.sh'), 'utf8');
-  assert.match(install, /OLLAMA_CHAT_MODEL='qwen3:14b'/);
+  const compose = await readFile(path.join(root, 'compose.yaml'), 'utf8');
+  assert.match(install, /OLLAMA_VERSION='0\.32\.1'/);
+  assert.match(install, /OLLAMA_CHAT_MODEL='gemma4:e2b'/);
+  assert.match(install, /gemma4:e4b \(Gemma 4 Effective 4B\)/);
+  assert.match(compose, /OLLAMA_VERSION:-0\.32\.1/);
+  assert.match(compose, /OLLAMA_CHAT_MODEL:-gemma4:e2b/);
   assert.match(install, /ask_ollama_model/);
   assert.match(install, /ask_ollama_gpu/);
   assert.match(install, /nvidia-smi --query-gpu=index,uuid,name,memory\.total/);
@@ -149,6 +154,8 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   assert.match(install, /api\/v1\/users\/\$\{user_id\}\/update/);
   assert.match(install, /Sincronizando a credencial administrativa do Open WebUI/);
   const bootstrap = await readFile(path.join(root, 'openwebui/bootstrap/bootstrap.sh'), 'utf8');
+  assert.match(bootstrap, /\{model:\$model,stream:false\}/);
+  assert.doesNotMatch(bootstrap, /\{name:\$model,stream:false\}/);
   assert.match(bootstrap, /configs\/tool_servers\/verify/);
   assert.match(bootstrap, /config:\{enable:true\}/);
   assert.match(bootstrap, /\.base_model_id = \$chat_model/);
@@ -170,6 +177,44 @@ test('Enter preserva o modelo Ollama já configurado na reinstalação', async (
       printf '%s\\n' "$OLLAMA_CHAT_MODEL" >"$2"
     `, 'test', path.join(temporaryRoot, 'install.sh'), selectionFile]);
     assert.equal(await readFile(selectionFile, 'utf8'), 'gemma3:12b\n');
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('seletor do Ollama oferece Gemma 4 Effective 4B e modelo personalizado', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-model-options-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    const selectionFile = path.join(temporaryRoot, 'selection');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      ask_ollama_model <<< $'2\n'
+      printf '%s\n' "$OLLAMA_CHAT_MODEL" >"$2"
+      ask_ollama_model <<< $'3\ngemma4:12b\n'
+      printf '%s\n' "$OLLAMA_CHAT_MODEL" >>"$2"
+    `, 'test', path.join(temporaryRoot, 'install.sh'), selectionFile]);
+    assert.equal(await readFile(selectionFile, 'utf8'), 'gemma4:e4b\ngemma4:12b\n');
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-version-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await writeFile(path.join(temporaryRoot, '.env'), 'OLLAMA_VERSION=0.31.2\n');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      CBM_MEM_BUDGET_MB=8192
+      ADMIN_EMAIL=admin@example.com
+      ADMIN_USERNAME=admin
+      create_environment_file
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+    const environment = await readFile(path.join(temporaryRoot, '.env'), 'utf8');
+    assert.match(environment, /^OLLAMA_VERSION=0\.31\.2$/m);
+    assert.match(environment, /^OLLAMA_CHAT_MODEL=gemma4:e2b$/m);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

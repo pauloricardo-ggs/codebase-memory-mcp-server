@@ -24,7 +24,8 @@ OPENWEBUI_PREVIOUS_EMAIL=''
 OPENWEBUI_PREVIOUS_NAME=''
 OPENWEBUI_PREVIOUS_PASSWORD=''
 OPENWEBUI_DESIRED_PASSWORD=''
-OLLAMA_CHAT_MODEL='qwen3:14b'
+OLLAMA_VERSION='0.32.1'
+OLLAMA_CHAT_MODEL='gemma4:e2b'
 OLLAMA_GPU_MODE='cpu'
 OLLAMA_GPU_DEVICE_IDS=''
 
@@ -239,12 +240,12 @@ ask_memory_budget() {
 ask_ollama_model() {
   local choice custom_model existing_model
   existing_model="$(read_existing_environment_value OLLAMA_CHAT_MODEL)"
-  OLLAMA_CHAT_MODEL="${existing_model:-qwen3:14b}"
+  OLLAMA_CHAT_MODEL="${existing_model:-gemma4:e2b}"
 
   printf "\n${COLOR_BOLD}Modelo local do Ollama${COLOR_RESET}\n"
   printf 'Qual modelo de chat deve ser baixado durante a instalação?\n\n'
-  printf '  1) qwen3:14b\n'
-  printf '  2) qwen3:30b\n'
+  printf '  1) gemma4:e2b (Gemma 4 Effective 2B)\n'
+  printf '  2) gemma4:e4b (Gemma 4 Effective 4B)\n'
   printf '  3) Outro modelo do Ollama\n\n'
 
   while true; do
@@ -253,10 +254,10 @@ ask_ollama_model() {
       break
     fi
     case "$choice" in
-      1) OLLAMA_CHAT_MODEL='qwen3:14b'; break ;;
-      2) OLLAMA_CHAT_MODEL='qwen3:30b'; break ;;
+      1) OLLAMA_CHAT_MODEL='gemma4:e2b'; break ;;
+      2) OLLAMA_CHAT_MODEL='gemma4:e4b'; break ;;
       3)
-        read -r -p 'Informe o identificador do modelo (ex.: gemma3:12b): ' custom_model
+        read -r -p 'Informe o identificador do modelo (ex.: gemma4:12b): ' custom_model
         if [[ "$custom_model" =~ ^[A-Za-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]]; then
           OLLAMA_CHAT_MODEL="$custom_model"
           break
@@ -554,6 +555,8 @@ write_openwebui_environment() {
 create_environment_file() {
   local temporary_file="${ENV_FILE}.tmp" ui_port=8787 agentgateway_ui_port=8788 openwebui_port=3000 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value
   if [[ -f "$ENV_FILE" ]]; then
+    existing_value="$(sed -n 's/^OLLAMA_VERSION=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[A-Za-z0-9._-]+$ ]] && OLLAMA_VERSION="$existing_value"
     existing_value="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && ui_port="$existing_value"
     existing_value="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
@@ -565,8 +568,8 @@ create_environment_file() {
     existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 20 )) && repository_sync_concurrency="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_CHAT_MODEL" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
