@@ -1,13 +1,14 @@
 # Configurar o Google Drive para o Open WebUI
 
-Este guia prepara um projeto no Google Cloud para que o Open WebUI permita selecionar e importar arquivos do Google Drive. A integração faz uma importação sob demanda; ela não mantém os arquivos sincronizados automaticamente.
+Este guia prepara um projeto no Google Cloud para dois recursos complementares: importar arquivos sob demanda pelo Google Picker e sincronizar automaticamente pastas do Drive com Knowledge Bases pelo painel administrativo.
 
-Ao final, você terá os dois valores solicitados pelo `install.sh`:
+Ao final, você terá as três credenciais solicitadas pelo `install.sh`:
 
 - um OAuth Client ID terminado em `.apps.googleusercontent.com`;
 - uma API Key do Google Picker, normalmente iniciada por `AIza`.
+- um arquivo JSON de Service Account usado exclusivamente pelo worker de sincronização.
 
-Não informe o OAuth Client Secret ao instalador. A integração do Open WebUI roda no navegador e utiliza somente o Client ID e a API Key.
+Não informe o OAuth Client Secret ao instalador. A importação interativa utiliza somente o Client ID e a API Key. O worker usa a Service Account com acesso somente de leitura às pastas explicitamente compartilhadas com ela.
 
 ---
 
@@ -154,6 +155,28 @@ A API Key é utilizada pelo navegador para abrir o Picker. As restrições de si
 ---
 
 <details>
+<summary style="font-size: 1.5em; font-weight: bold;">Criar a Service Account para sincronização</summary>
+
+No mesmo projeto Google Cloud:
+
+1. Abra **IAM e administrador → Contas de serviço**.
+2. Clique em **Criar conta de serviço**.
+3. Informe um nome, por exemplo `openwebui-knowledge-sync`.
+4. Não conceda papéis de IAM no projeto; o acesso aos documentos será dado diretamente no Drive.
+5. Abra a conta criada e acesse **Chaves → Adicionar chave → Criar nova chave**.
+6. Selecione **JSON** e guarde o arquivo baixado em um local protegido.
+7. Copie o e-mail da conta, terminado em `iam.gserviceaccount.com`.
+8. No Google Drive, compartilhe cada pasta que poderá ser sincronizada com esse e-mail como **Leitor**.
+
+O worker enxerga somente arquivos e pastas acessíveis à Service Account. Compartilhar uma pasta raiz normalmente concede leitura aos seus descendentes. Não publique o JSON, não o envie para o Git e não conceda permissão de edição.
+
+O instalador copia o JSON para `data/secrets/google-drive-service-account.json`, aplica permissão `0600` e o monta somente no container `knowledge-sync`.
+
+</details>
+
+---
+
+<details>
 <summary style="font-size: 1.5em; font-weight: bold;">Executar o instalador</summary>
 
 Execute normalmente:
@@ -172,6 +195,7 @@ Responda `s` e informe:
 
 1. o OAuth Client ID criado na etapa 4;
 2. a API Key criada na etapa 5.
+3. o caminho local do JSON da Service Account criado na etapa anterior.
 
 O instalador salva a configuração em `data/secrets/openwebui.env`, com permissão restrita, e disponibiliza ao container:
 
@@ -182,6 +206,30 @@ GOOGLE_DRIVE_API_KEY=sua-api-key
 ```
 
 Não grave valores reais no Git, no README ou em arquivos de exemplo.
+
+Quando a integração é habilitada, o instalador também ativa o profile `google-drive` do Docker Compose, gera um token interno e inicia o container `knowledge-sync`. Se a integração for desabilitada numa reinstalação, o profile deixa de ser ativado e as credenciais do worker são removidas. O histórico dos vínculos permanece em `data/knowledge-sync/` para permitir recuperação administrativa.
+
+</details>
+
+---
+
+<details>
+<summary style="font-size: 1.5em; font-weight: bold;">Vincular pastas às Knowledge Bases</summary>
+
+1. Crie as Knowledge Bases desejadas no Open WebUI.
+2. Se necessário, associe cada modelo somente à sua respectiva base.
+3. Abra o painel administrativo em `http://<servidor>:8787/admin/`.
+4. Entre em **Bases e Drive**.
+5. Localize a Knowledge Base e clique em **Vincular pastas**.
+6. Selecione uma ou mais pastas acessíveis à Service Account.
+7. Defina o intervalo, mantenha a rotina ativada e salve.
+8. Use **Sincronizar agora** para antecipar a primeira execução e acompanhe o histórico.
+
+Use **Pausar** para interromper novas verificações sem remover conteúdo. A ação **Desvincular** remove da Knowledge Base os arquivos enviados pelo worker e preserva os originais no Drive.
+
+Cada vínculo é isolado pelo ID da Knowledge Base. Arquivos da Pasta A enviados para a Base A não entram na Base B. Dentro da base, o worker cria a estrutura `Google Drive (gerenciado)/<pasta>--<id>/` e registra somente os arquivos que ele próprio enviou. Exclusões no Drive removem apenas esses arquivos gerenciados; uploads manuais da base são preservados.
+
+O fluxo é unidirecional: alterações feitas no Drive chegam ao Open WebUI. Alterar ou remover arquivos diretamente na área gerenciada da base não modifica o Drive e pode ser revertido na próxima sincronização.
 
 </details>
 
@@ -225,6 +273,10 @@ docker compose exec -T open-webui sh -c '
 | Erro de API Key ou referenciador | Confirme as restrições de site, incluindo protocolo, porta e a entrada terminada em `/*`. |
 | O Picker abre, mas o download falha | Confirme que a Google Drive API está ativa, que os dois escopos foram declarados e que o usuário possui acesso ao arquivo. |
 | A opção Google Drive não aparece | Execute novamente o instalador, valide as variáveis com o comando acima e confira o toggle em **Admin Panel → Settings → Documents**. |
+| A pasta não aparece em **Bases e Drive** | Compartilhe-a como Leitor com o e-mail da Service Account exibido no painel. Também é possível informar diretamente o folder ID. |
+| Worker indisponível | Confirme que `COMPOSE_PROFILES=google-drive` está no `.env` e consulte `docker compose logs knowledge-sync`. |
+| Sincronização falha ao autenticar no Open WebUI | Execute novamente o instalador para recriar o worker com a credencial administrativa atual. |
+| Origem vazia | O worker preserva os arquivos existentes quando uma origem previamente preenchida retorna vazia. Verifique permissões e a disponibilidade do Drive. |
 
 </details>
 
@@ -240,5 +292,7 @@ docker compose exec -T open-webui sh -c '
 - [Escopos da Google Drive API](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
 - [Gerenciar e restringir API Keys](https://cloud.google.com/docs/authentication/api-keys)
 - [Configurar o público do aplicativo OAuth](https://support.google.com/cloud/answer/15549945)
+- [Criar e gerenciar Service Accounts](https://cloud.google.com/iam/docs/service-accounts-create)
+- [Compartilhar arquivos e pastas no Google Drive](https://support.google.com/drive/answer/2494822)
 
 </details>

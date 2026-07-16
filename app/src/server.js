@@ -16,6 +16,7 @@ const GITHUB_CREDENTIALS_FILE = path.join(DATA_DIR, 'secrets', 'github-credentia
 const MCP_USERS_FILE = path.join(DATA_DIR, 'secrets', 'mcp-users.json');
 const MCP_SYSTEM_TOKEN_FILE = path.join(DATA_DIR, 'secrets', 'mcp-system-token');
 const MCP_WORKSPACE_KEY_FILE = path.join(DATA_DIR, 'secrets', 'mcp-workspace-encryption-key');
+const KNOWLEDGE_SYNC_TOKEN_FILE = process.env.KNOWLEDGE_SYNC_TOKEN_FILE || path.join(DATA_DIR, 'secrets', 'knowledge-sync-token');
 const CBM_BIN = process.env.CBM_BIN || 'codebase-memory-mcp';
 const PORT = Number(process.env.PORT || 3000);
 const UI_PORT = Number(process.env.UI_PORT);
@@ -25,6 +26,8 @@ const MCP_GUARDRAIL_ADDR = process.env.MCP_GUARDRAIL_ADDR || '0.0.0.0:3001';
 const CBM_PROJECT_RECONCILE = process.env.CBM_PROJECT_RECONCILE !== 'false';
 const WORKSPACE_TIMEZONE = process.env.WORKSPACE_TIMEZONE || DEFAULT_TIMEZONE;
 const REPOSITORY_SYNC_CONCURRENCY = Math.max(1, Math.min(20, Number.parseInt(process.env.REPOSITORY_SYNC_CONCURRENCY || '3', 10) || 3));
+const KNOWLEDGE_SYNC_ENABLED = process.env.KNOWLEDGE_SYNC_ENABLED === 'true';
+const KNOWLEDGE_SYNC_URL = String(process.env.KNOWLEDGE_SYNC_URL || 'http://knowledge-sync:3002').replace(/\/+$/, '');
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
@@ -54,6 +57,7 @@ mcpUserStore.users = mcpUserStore.users.map(item => {
 if (stateMigrated || schedulesMigrated) await saveState(STATE_FILE, state);
 if (mcpUsersMigrated) await saveMcpUserStore(MCP_USERS_FILE, mcpUserStore);
 let mcpSystemToken = await loadSecret(MCP_SYSTEM_TOKEN_FILE);
+let knowledgeSyncToken = KNOWLEDGE_SYNC_ENABLED ? await loadSecret(KNOWLEDGE_SYNC_TOKEN_FILE) : '';
 let mcpWorkspaceEncryptionKey = await loadSecret(MCP_WORKSPACE_KEY_FILE);
 if (!mcpWorkspaceEncryptionKey) {
   mcpWorkspaceEncryptionKey = generateMcpToken();
@@ -83,9 +87,49 @@ function json(response, status, payload) {
   response.end(JSON.stringify(payload));
 }
 
-function errorResponse(response, error, status = 400) {
+function errorResponse(response, error, status = error.status || 400) {
   console.error(error);
   json(response, status, { error: error.message || 'Erro inesperado.' });
+}
+
+async function knowledgeSyncRequest(pathname, { method = 'GET', payload } = {}) {
+  if (!KNOWLEDGE_SYNC_ENABLED) {
+    const error = new Error('A sincronização com Google Drive não foi habilitada no instalador.');
+    error.status = 503;
+    throw error;
+  }
+  if (!knowledgeSyncToken) {
+    knowledgeSyncToken = await loadSecret(KNOWLEDGE_SYNC_TOKEN_FILE);
+    if (!knowledgeSyncToken) {
+      const error = new Error('O token interno do worker de sincronização não foi encontrado.');
+      error.status = 503;
+      throw error;
+    }
+  }
+  let response;
+  try {
+    response = await fetch(`${KNOWLEDGE_SYNC_URL}${pathname}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${knowledgeSyncToken}`,
+        ...(payload === undefined ? {} : { 'content-type': 'application/json' })
+      },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+      signal: AbortSignal.timeout(180_000)
+    });
+  } catch (cause) {
+    const error = new Error('O worker de sincronização do Google Drive não está disponível.');
+    error.status = 503;
+    error.cause = cause;
+    throw error;
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(result.error || 'O worker rejeitou a operação.');
+    error.status = response.status;
+    throw error;
+  }
+  return { status: response.status, result };
 }
 
 async function body(request) {
@@ -609,7 +653,13 @@ async function routeApi(request, response, url) {
     return json(response, 200, { status: 'ok' });
   }
   if (request.method === 'GET' && url.pathname === '/api/config') {
-    return json(response, 200, { uiPort: UI_PORT, agentgatewayUiPort: AGENTGATEWAY_UI_PORT });
+    return json(response, 200, { uiPort: UI_PORT, agentgatewayUiPort: AGENTGATEWAY_UI_PORT, knowledgeSyncEnabled: KNOWLEDGE_SYNC_ENABLED });
+  }
+  if (url.pathname.startsWith('/api/knowledge-sync')) {
+    const workerPath = `/api${url.pathname.slice('/api/knowledge-sync'.length)}${url.search}`;
+    const payload = ['POST', 'PUT', 'PATCH'].includes(request.method) ? await body(request) : undefined;
+    const result = await knowledgeSyncRequest(workerPath, { method: request.method, payload });
+    return json(response, result.status, result.result);
   }
   if (url.pathname === '/api/mcp-system-token/reveal' && request.method === 'POST') {
     return json(response, 200, { token: mcpSystemToken, name: MCP_SYSTEM_USER.name });

@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 const root = path.resolve(import.meta.dirname, '../..');
 const execFileAsync = promisify(execFile);
 
-test('Compose inclui Ollama, Docling, Open WebUI e bootstrap persistentes', async () => {
+test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker opcional persistentes', async () => {
   const compose = await readFile(path.join(root, 'compose.yaml'), 'utf8');
   for (const service of ['ollama:', 'docling:', 'open-webui:', 'openwebui-bootstrap:']) {
     assert.match(compose, new RegExp(`^  ${service}`, 'm'));
@@ -22,6 +22,10 @@ test('Compose inclui Ollama, Docling, Open WebUI e bootstrap persistentes', asyn
   assert.match(compose, /\.\/data\/secrets:\/run\/cbm-secrets:ro/);
   assert.match(compose, /ollama-data:/);
   assert.match(compose, /openwebui-data:/);
+  assert.match(compose, /^  knowledge-sync:/m);
+  assert.match(compose, /profiles: \["google-drive"\]/);
+  assert.match(compose, /GOOGLE_APPLICATION_CREDENTIALS: \/run\/secrets\/google-drive-service-account.json/);
+  assert.match(compose, /KNOWLEDGE_SYNC_URL: http:\/\/knowledge-sync:3002/);
 });
 
 test('presets de exemplo selecionam o padrão e carregam parâmetros e integrações esperados', async () => {
@@ -38,6 +42,20 @@ test('presets de exemplo selecionam o padrão e carregam parâmetros e integraç
   assert.match(manifest.models[1].params.system, /acesso administrativo total/);
 });
 
+test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF interno', async () => {
+  const [html, browser, server] = await Promise.all([
+    readFile(path.join(root, 'app/public/index.html'), 'utf8'),
+    readFile(path.join(root, 'app/public/app.js'), 'utf8'),
+    readFile(path.join(root, 'app/src/server.js'), 'utf8')
+  ]);
+  assert.match(html, /data-view="knowledge-sync"/);
+  assert.match(browser, /Vincular pastas/);
+  assert.match(browser, /run-knowledge-sync/);
+  assert.match(browser, /delete-knowledge-sync/);
+  assert.match(server, /url\.pathname\.startsWith\('\/api\/knowledge-sync'\)/);
+  assert.match(server, /KNOWLEDGE_SYNC_TOKEN_FILE/);
+});
+
 test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   const install = await readFile(path.join(root, 'install.sh'), 'utf8');
   assert.match(install, /OLLAMA_CHAT_MODEL='qwen3:14b'/);
@@ -49,6 +67,9 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   assert.match(install, /ENABLE_GOOGLE_DRIVE_INTEGRATION/);
   assert.match(install, /GOOGLE_DRIVE_CLIENT_ID/);
   assert.match(install, /GOOGLE_DRIVE_API_KEY/);
+  assert.match(install, /JSON da Service Account para sincronização/);
+  assert.match(install, /COMPOSE_PROFILES/);
+  assert.match(install, /restart_and_validate_knowledge_sync_command/);
   assert.match(install, /E-mail administrativo/);
   assert.match(install, /mínimo de 6 caracteres/);
   assert.match(install, /OPENWEBUI_ADMIN_NAME='Admin'/);
@@ -64,6 +85,38 @@ test('instalador sugere qwen3:14b e bootstrap é executável', async () => {
   if (process.platform !== 'win32') {
     const mode = (await stat(path.join(root, 'openwebui/bootstrap/bootstrap.sh'))).mode & 0o777;
     assert.ok(mode & 0o100, 'bootstrap.sh deve ser executável');
+  }
+});
+
+test('instalador protege a Service Account e o token interno do worker', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-knowledge-sync-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    const source = path.join(temporaryRoot, 'service-account-source.json');
+    const credentials = {
+      type: 'service_account',
+      client_email: 'sync@example.iam.gserviceaccount.com',
+      private_key: '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n'
+    };
+    await writeFile(source, JSON.stringify(credentials));
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      ENABLE_GOOGLE_DRIVE_INTEGRATION=true
+      GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE="$2"
+      create_local_structure
+      configure_google_drive_sync
+    `, 'test', path.join(temporaryRoot, 'install.sh'), source]);
+
+    const copied = path.join(temporaryRoot, 'data/secrets/google-drive-service-account.json');
+    const token = path.join(temporaryRoot, 'data/secrets/knowledge-sync-token');
+    assert.deepEqual(JSON.parse(await readFile(copied, 'utf8')), credentials);
+    assert.match(await readFile(token, 'utf8'), /^[a-f0-9]{64}\n$/);
+    if (process.platform !== 'win32') {
+      assert.equal((await stat(copied)).mode & 0o777, 0o600);
+      assert.equal((await stat(token)).mode & 0o777, 0o600);
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 

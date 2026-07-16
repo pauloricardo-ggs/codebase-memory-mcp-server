@@ -9,6 +9,9 @@ let selectedRepositories = new Set();
 let selectedMcpRepositories = new Set();
 let mcpAccessOptions = [];
 let currentMcpUsers = [];
+let knowledgeSyncTargets = [];
+let knowledgeSyncFolders = [];
+let selectedDriveFolders = new Map();
 let publicConfig = {};
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
@@ -120,6 +123,80 @@ async function renderWorkspace(id) {
 function editScheduleModal(schedule) {
   const [minute, hour, day, month, weekday] = schedule.cron.split(' ');
   openModal(`<h2 class="modal-title">Atualização automática</h2><p class="modal-copy">Configure os cinco campos do cron separadamente. Use <code>*</code> para qualquer valor, vírgula para listas e <code>*/n</code> para intervalos.</p><div class="cron-fields"><div class="field"><label for="schedule-minute">Minuto</label><input id="schedule-minute" value="${escapeHtml(minute)}" placeholder="0"><small>0–59</small></div><div class="field"><label for="schedule-hour">Hora</label><input id="schedule-hour" value="${escapeHtml(hour)}" placeholder="*"><small>0–23</small></div><div class="field"><label for="schedule-day">Dia do mês</label><input id="schedule-day" value="${escapeHtml(day)}" placeholder="*"><small>1–31</small></div><div class="field"><label for="schedule-month">Mês</label><input id="schedule-month" value="${escapeHtml(month)}" placeholder="*"><small>1–12</small></div><div class="field"><label for="schedule-weekday">Dia da semana</label><input id="schedule-weekday" value="${escapeHtml(weekday)}" placeholder="*"><small>0–7, domingo</small></div></div><div class="cron-preview"><small>Configuração atual</small><strong>${escapeHtml(schedule.description)}</strong><code>${escapeHtml(schedule.cron)}</code></div><div class="field"><label for="schedule-timezone">Fuso horário</label><input id="schedule-timezone" value="${escapeHtml(schedule.timezone)}" placeholder="America/Maceio"></div><label class="switch-control switch-modal"><input id="schedule-enabled" type="checkbox" ${schedule.enabled ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span><span>Rotina ativada</span></label><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-schedule">Salvar</button></div>`);
+}
+
+function syncStatusLabel(target) {
+  if (target?.running) return 'Sincronizando';
+  if (target?.lastRunStatus === 'failed') return 'Falhou';
+  if (!target?.enabled) return 'Pausada';
+  if (target?.lastRunStatus === 'completed') return 'Ativa';
+  return target ? 'Aguardando' : 'Sem vínculo';
+}
+
+function knowledgeSyncRow(knowledgeBase, target) {
+  const status = syncStatusLabel(target);
+  const statusClass = target?.running ? 'running' : target?.lastRunStatus === 'failed' ? 'failed' : target?.enabled ? 'active' : 'revoked';
+  const folders = target?.folders || [];
+  return `<article class="knowledge-sync-row">
+    <div class="knowledge-sync-identity"><span class="workspace-icon">KB</span><div><strong>${escapeHtml(knowledgeBase.name)}</strong><small>${escapeHtml(knowledgeBase.description || `ID: ${knowledgeBase.id}`)}</small></div></div>
+    <div class="knowledge-sync-folders"><small>Pastas do Drive</small>${folders.length ? `<div>${folders.map(folder => `<span class="folder-chip" title="${escapeHtml(folder.id)}">▣ ${escapeHtml(folder.name)}</span>`).join('')}</div>` : '<span class="subtle">Nenhuma pasta vinculada</span>'}</div>
+    <div class="knowledge-sync-stats"><small>Sincronização</small><span class="status ${statusClass}">${status}</span>${target ? `<span>${target.managedFileCount} arquivo${target.managedFileCount === 1 ? '' : 's'} · a cada ${target.intervalMinutes} min</span><span>Última: ${date(target.lastRunAt)}</span>` : '<span>Configure para iniciar</span>'}${target?.lastError ? `<span class="sync-error" title="${escapeHtml(target.lastError)}">${escapeHtml(target.lastError)}</span>` : ''}</div>
+    <div class="repo-actions">
+      ${target ? `<button class="button small" data-action="run-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${target.running ? 'disabled' : ''}>Sincronizar agora</button><button class="button small" data-action="toggle-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}">${target.enabled ? 'Pausar' : 'Ativar'}</button><button class="button small" data-action="knowledge-sync-history" data-kb="${escapeHtml(knowledgeBase.id)}">Histórico</button><button class="button small danger" data-action="delete-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}">Desvincular</button>` : ''}
+      <button class="button small ${target ? '' : 'primary'}" data-action="configure-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}">${target ? 'Editar vínculo' : 'Vincular pastas'}</button>
+    </div>
+  </article>`;
+}
+
+async function renderKnowledgeSync() {
+  currentView = 'knowledge-sync'; currentWorkspace = null;
+  setNavigation('knowledge-sync');
+  setHeader('Bases e Google Drive', 'Administração / Knowledge Bases');
+  content.innerHTML = '<div class="loading"><i></i> Consultando bases e worker…</div>';
+  const [status, baseData, targetData] = await Promise.all([
+    api('/api/knowledge-sync/status'),
+    api('/api/knowledge-sync/knowledge-bases'),
+    api('/api/knowledge-sync/targets')
+  ]);
+  knowledgeSyncTargets = targetData.targets;
+  const linked = new Map(knowledgeSyncTargets.map(target => [target.knowledgeBaseId, target]));
+  content.innerHTML = `<div class="access-banner"><div><strong>Sincronização automática ativa</strong><p>Compartilhe as pastas com <code>${escapeHtml(status.serviceAccountEmail)}</code>. Cada vínculo envia arquivos somente para a Knowledge Base selecionada.</p></div><code>${knowledgeSyncTargets.length} vínculo${knowledgeSyncTargets.length === 1 ? '' : 's'}</code></div>
+    <div class="toolbar"><span class="subtle">${baseData.knowledgeBases.length} Knowledge Base${baseData.knowledgeBases.length === 1 ? '' : 's'} encontrada${baseData.knowledgeBases.length === 1 ? '' : 's'}</span></div>
+    ${baseData.knowledgeBases.length ? `<div class="knowledge-sync-list">${baseData.knowledgeBases.map(base => knowledgeSyncRow(base, linked.get(base.id))).join('')}</div>` : '<div class="empty"><div><div class="empty-icon">KB</div><h2>Nenhuma Knowledge Base encontrada</h2><p>Crie uma base no Open WebUI antes de vincular pastas do Google Drive.</p></div></div>'}`;
+}
+
+function driveFolderRows(folders) {
+  return folders.map(folder => `<label class="picker-row"><input type="checkbox" name="drive-folder" value="${escapeHtml(folder.id)}" ${selectedDriveFolders.has(folder.id) ? 'checked' : ''}><span><strong>${escapeHtml(folder.name)}</strong><small>${escapeHtml(folder.id)}</small></span><span class="badge">pasta</span></label>`).join('') || '<div class="empty" style="min-height:120px">Nenhuma pasta encontrada.</div>';
+}
+
+function updateDriveFolderSelection() {
+  const node = $('#drive-folder-selection');
+  if (node) node.textContent = `${selectedDriveFolders.size} selecionada${selectedDriveFolders.size === 1 ? '' : 's'}`;
+  const save = $('[data-action="save-knowledge-sync"]');
+  if (save) save.disabled = selectedDriveFolders.size === 0;
+}
+
+async function knowledgeSyncModal(knowledgeBaseId) {
+  const [baseData, folderData] = await Promise.all([
+    api('/api/knowledge-sync/knowledge-bases'),
+    api('/api/knowledge-sync/folders')
+  ]);
+  const knowledgeBase = baseData.knowledgeBases.find(item => item.id === knowledgeBaseId);
+  if (!knowledgeBase) throw new Error('Knowledge Base não encontrada.');
+  const existing = knowledgeSyncTargets.find(item => item.knowledgeBaseId === knowledgeBaseId);
+  knowledgeSyncFolders = folderData.folders;
+  selectedDriveFolders = new Map((existing?.folders || []).map(folder => [folder.id, folder]));
+  openModal(`<h2 class="modal-title">Vincular ${escapeHtml(knowledgeBase.name)}</h2><p class="modal-copy">Selecione uma ou mais pastas compartilhadas com <strong>${escapeHtml(folderData.serviceAccountEmail)}</strong>. O worker manterá os arquivos isolados nesta base.</p><input class="search" id="drive-folder-search" placeholder="Buscar pasta por nome ou ID…"><div class="picker-summary"><span>${knowledgeSyncFolders.length} acessíveis</span><strong id="drive-folder-selection">${selectedDriveFolders.size} selecionada${selectedDriveFolders.size === 1 ? '' : 's'}</strong></div><div class="picker" id="drive-folder-picker">${driveFolderRows(knowledgeSyncFolders)}</div><div class="field"><label for="drive-folder-id">Adicionar diretamente pelo folder ID</label><div class="inline-field"><input id="drive-folder-id" placeholder="ID da pasta compartilhada"><button class="button" type="button" data-action="add-drive-folder-id">Adicionar</button></div></div><div class="field"><label for="knowledge-sync-interval">Intervalo em minutos</label><input id="knowledge-sync-interval" type="number" min="5" max="10080" value="${existing?.intervalMinutes || 60}"><p class="field-help">Mínimo de 5 minutos. Alterações são enviadas para esta Knowledge Base e processadas pelo Open WebUI.</p></div><label class="switch-control switch-modal"><input id="knowledge-sync-enabled" type="checkbox" ${existing?.enabled === false ? '' : 'checked'}><span class="switch-track" aria-hidden="true"></span><span>Sincronização ativada</span></label><div class="modal-actions"><button class="button" value="cancel">Cancelar</button><button class="button primary" type="button" data-action="save-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}" ${selectedDriveFolders.size ? '' : 'disabled'}>Salvar vínculo</button></div>`);
+  $('#drive-folder-search').addEventListener('input', event => {
+    const query = normalizeSearch(event.target.value);
+    const filtered = knowledgeSyncFolders.filter(folder => normalizeSearch(`${folder.name} ${folder.id}`).includes(query));
+    $('#drive-folder-picker').innerHTML = driveFolderRows(filtered);
+  });
+}
+
+async function knowledgeSyncHistoryModal(knowledgeBaseId) {
+  const { history } = await api(`/api/knowledge-sync/history?knowledgeBaseId=${encodeURIComponent(knowledgeBaseId)}`);
+  openModal(`<h2 class="modal-title">Histórico de sincronização</h2><p class="modal-copy">Execuções mais recentes desta Knowledge Base.</p>${history.length ? `<div class="sync-history">${history.map(run => `<article><div><strong>${date(run.startedAt)}</strong><span class="status ${run.status === 'completed' ? 'completed' : 'failed'}">${run.status === 'completed' ? 'Concluída' : 'Falhou'}</span></div><small>+${run.added} adicionados · ~${run.modified} alterados · −${run.deleted} removidos · ${run.unchanged} sem mudança</small>${run.error ? `<p>${escapeHtml(run.error)}</p>` : ''}</article>`).join('')}</div>` : '<div class="empty" style="min-height:160px">Nenhuma execução registrada.</div>'}<div class="modal-actions"><button class="button" value="cancel">Fechar</button></div>`);
 }
 
 function renderJobs() {
@@ -305,6 +382,12 @@ document.addEventListener('change', event => {
     updateMcpAccessSelection();
   }
   if (event.target.matches('input[name=mcp-repository]')) updateMcpAccessSelection();
+  if (event.target.matches('input[name=drive-folder]')) {
+    const folder = knowledgeSyncFolders.find(item => item.id === event.target.value) || selectedDriveFolders.get(event.target.value);
+    if (event.target.checked && folder) selectedDriveFolders.set(folder.id, folder);
+    else selectedDriveFolders.delete(event.target.value);
+    updateDriveFolderSelection();
+  }
 });
 
 async function refreshJobs() {
@@ -324,8 +407,40 @@ document.addEventListener('click', async event => {
     if (target.dataset.view === 'workspaces') return renderWorkspaces();
     if (target.dataset.view === 'jobs') return renderJobs();
     if (target.dataset.view === 'mcp-users') return renderMcpUsers();
+    if (target.dataset.view === 'knowledge-sync') return renderKnowledgeSync();
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
     if (action === 'new-workspace') return newWorkspaceModal();
+    if (action === 'configure-knowledge-sync') return knowledgeSyncModal(target.dataset.kb);
+    if (action === 'add-drive-folder-id') {
+      const id = $('#drive-folder-id').value.trim();
+      if (!id) throw new Error('Informe o folder ID.');
+      selectedDriveFolders.set(id, { id, name:`Pasta ${id.slice(0, 8)}` });
+      $('#drive-folder-id').value = '';
+      updateDriveFolderSelection();
+      toast('Folder ID adicionado; o acesso será validado ao salvar.');
+      return;
+    }
+    if (action === 'save-knowledge-sync') {
+      target.disabled = true;
+      await api(`/api/knowledge-sync/targets/${target.dataset.kb}`, { method:'PUT', body:JSON.stringify({ knowledgeBaseName:target.dataset.name, folders:[...selectedDriveFolders.values()], intervalMinutes:Number($('#knowledge-sync-interval').value), enabled:$('#knowledge-sync-enabled').checked }) });
+      closeModal(); toast('Vínculo salvo. A primeira sincronização será agendada automaticamente.'); return renderKnowledgeSync();
+    }
+    if (action === 'run-knowledge-sync') {
+      await api(`/api/knowledge-sync/targets/${target.dataset.kb}/run`, { method:'POST' });
+      toast('Sincronização iniciada.'); return renderKnowledgeSync();
+    }
+    if (action === 'toggle-knowledge-sync') {
+      const current = knowledgeSyncTargets.find(item => item.knowledgeBaseId === target.dataset.kb);
+      if (!current) throw new Error('Vínculo não encontrado.');
+      await api(`/api/knowledge-sync/targets/${target.dataset.kb}`, { method:'PUT', body:JSON.stringify({ knowledgeBaseName:current.knowledgeBaseName, folders:current.folders, intervalMinutes:current.intervalMinutes, enabled:!current.enabled }) });
+      toast(current.enabled ? 'Sincronização pausada.' : 'Sincronização ativada.'); return renderKnowledgeSync();
+    }
+    if (action === 'knowledge-sync-history') return knowledgeSyncHistoryModal(target.dataset.kb);
+    if (action === 'delete-knowledge-sync') {
+      if (!confirm(`Desvincular ${target.dataset.name}? Os arquivos enviados pelo worker serão removidos da base, mas permanecerão no Google Drive.`)) return;
+      await api(`/api/knowledge-sync/targets/${target.dataset.kb}?deleteFiles=true`, { method:'DELETE' });
+      toast('Pastas desvinculadas da Knowledge Base.'); return renderKnowledgeSync();
+    }
     if (action === 'edit-schedule') {
       const { workspace } = await api(`/api/workspaces/${currentWorkspace}`);
       return editScheduleModal(workspace.updateSchedule);
@@ -428,5 +543,7 @@ document.addEventListener('click', async event => {
 });
 
 publicConfig = await api('/api/config');
+$('#knowledge-sync-nav').hidden = !publicConfig.knowledgeSyncEnabled;
 await Promise.all([renderGithub(), renderWorkspaces(), refreshJobs()]);
 setInterval(refreshJobs, 3000);
+setInterval(() => { if (currentView === 'knowledge-sync') renderKnowledgeSync().catch(() => {}); }, 5000);

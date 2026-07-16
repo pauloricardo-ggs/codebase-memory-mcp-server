@@ -27,6 +27,7 @@ OLLAMA_CHAT_MODEL='qwen3:14b'
 ENABLE_GOOGLE_DRIVE_INTEGRATION='false'
 GOOGLE_DRIVE_CLIENT_ID=''
 GOOGLE_DRIVE_API_KEY=''
+GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE=''
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
@@ -55,6 +56,7 @@ cleanup() {
   OPENWEBUI_DESIRED_PASSWORD=''
   GOOGLE_DRIVE_CLIENT_ID=''
   GOOGLE_DRIVE_API_KEY=''
+  GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE=''
   if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -250,7 +252,8 @@ ask_ollama_model() {
 
 ask_google_drive_integration() {
   local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
-  local answer default_answer='n' prompt='[s/N]' client_id api_key existing_enabled='false'
+  local answer default_answer='n' prompt='[s/N]' client_id api_key service_account_path existing_enabled='false'
+  local service_account_file="${DATA_DIR}/secrets/google-drive-service-account.json"
 
   if [[ -f "$openwebui_env" ]]; then
     existing_enabled="$(sed -n 's/^ENABLE_GOOGLE_DRIVE_INTEGRATION=//p' "$openwebui_env" | tail -n 1)"
@@ -311,7 +314,28 @@ ask_google_drive_integration() {
     warn 'Informe uma API Key válida, sem espaços.'
   done
 
-  success 'Integração com Google Drive habilitada'
+  while true; do
+    if [[ -s "$service_account_file" ]]; then
+      read -r -p 'JSON da Service Account para sincronização [Enter para manter o atual]: ' service_account_path
+      if [[ -z "$service_account_path" ]]; then
+        GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE="$service_account_file"
+        break
+      fi
+    else
+      read -r -p 'Caminho do JSON da Service Account para sincronização: ' service_account_path
+    fi
+    service_account_path="${service_account_path/#\~/$HOME}"
+    if [[ -r "$service_account_path" ]] \
+      && grep -Eq '"type"[[:space:]]*:[[:space:]]*"service_account"' "$service_account_path" \
+      && grep -Eq '"client_email"[[:space:]]*:' "$service_account_path" \
+      && grep -Eq '"private_key"[[:space:]]*:' "$service_account_path"; then
+      GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE="$service_account_path"
+      break
+    fi
+    warn 'Informe um JSON válido de Service Account do Google.'
+  done
+
+  success 'Integração e sincronização com Google Drive habilitadas'
 }
 
 read_existing_environment_value() {
@@ -380,10 +404,33 @@ ask_proxy_access() {
 }
 
 create_local_structure() {
-  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR"
+  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync"
   chmod 755 "$REPOSITORIES_DIR"
-  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR"
+  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync"
   success "Estrutura local criada em ${BASE_DIR}"
+}
+
+configure_google_drive_sync() {
+  local service_account_file="${DATA_DIR}/secrets/google-drive-service-account.json"
+  local sync_token_file="${DATA_DIR}/secrets/knowledge-sync-token"
+  if [[ "$ENABLE_GOOGLE_DRIVE_INTEGRATION" != 'true' ]]; then
+    rm -f "$service_account_file" "$sync_token_file"
+    return
+  fi
+
+  [[ -r "$GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE" ]] || fail 'O JSON da Service Account não está acessível.'
+  jq -e '.type == "service_account" and (.client_email | type == "string") and (.private_key | type == "string")' \
+    "$GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE" >/dev/null \
+    || fail 'O arquivo informado não é uma Service Account válida.'
+  install -m 600 "$GOOGLE_DRIVE_SERVICE_ACCOUNT_SOURCE" "${service_account_file}.tmp"
+  mv "${service_account_file}.tmp" "$service_account_file"
+  if [[ ! -s "$sync_token_file" ]]; then
+    openssl rand -hex 32 >"${sync_token_file}.tmp"
+    chmod 600 "${sync_token_file}.tmp"
+    mv "${sync_token_file}.tmp" "$sync_token_file"
+  fi
+  chmod 600 "$service_account_file" "$sync_token_file"
+  success 'Credenciais do worker de sincronização configuradas'
 }
 
 create_proxy_credentials() {
@@ -461,8 +508,10 @@ create_environment_file() {
     existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 20 )) && repository_sync_concurrency="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_CHAT_MODEL=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_CHAT_MODEL" >"$temporary_file"
+  local compose_profiles=''
+  [[ "$ENABLE_GOOGLE_DRIVE_INTEGRATION" == 'true' ]] && compose_profiles='google-drive'
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_CHAT_MODEL=%s\nENABLE_GOOGLE_DRIVE_INTEGRATION=%s\nCOMPOSE_PROFILES=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_CHAT_MODEL" "$ENABLE_GOOGLE_DRIVE_INTEGRATION" "$compose_profiles" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -500,6 +549,9 @@ docker_compose() {
 
 start_admin_panel_command() {
   cd "$BASE_DIR"
+  if [[ "$ENABLE_GOOGLE_DRIVE_INTEGRATION" != 'true' ]]; then
+    docker_compose rm -sf knowledge-sync >/dev/null 2>&1 || true
+  fi
   # O agentgateway-config altera um arquivo bind-mounted sem modificar a
   # definição do serviço. Force a recriação para o AgentGateway reler a porta
   # antes de o agentgateway-ready verificar o listener MCP.
@@ -709,6 +761,32 @@ validate_openwebui_command() {
   }
 }
 
+restart_and_validate_knowledge_sync_command() {
+  [[ "$ENABLE_GOOGLE_DRIVE_INTEGRATION" == 'true' ]] || return 0
+  docker_compose up -d --build --force-recreate knowledge-sync
+  docker_compose exec -T admin node --input-type=module -e '
+    const { readFile } = await import("node:fs/promises");
+    const token = (await readFile("/data/app/secrets/knowledge-sync-token", "utf8")).trim();
+    let lastError;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        const health = await fetch("http://knowledge-sync:3002/health", { signal: AbortSignal.timeout(3000) });
+        const status = await fetch("http://knowledge-sync:3002/api/status", {
+          headers: { authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(3000)
+        });
+        if (health.ok && status.ok) process.exit(0);
+        lastError = new Error(`health=${health.status}, status=${status.status}`);
+      } catch (error) { lastError = error; }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    throw new Error(`Worker não ficou disponível: ${lastError?.message}`);
+  ' || {
+    docker_compose logs --tail=200 knowledge-sync
+    return 1
+  }
+}
+
 migrate_openwebui_admin_command() {
   local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
   local openwebui_port webui_secret auth_payload auth_response token user_id update_payload update_response
@@ -811,6 +889,9 @@ show_summary() {
   printf 'AgentGateway Admin UI protegida:\n  http://<IP-ou-dominio>:%s/mcp-panel/\n' "$agentgateway_ui_port"
   printf '\nEndpoint MCP remoto:\n  http://<IP-ou-dominio>:%s/mcp\n\n' "$ui_port"
   printf 'Open WebUI:\n  http://<IP-ou-dominio>:%s/\n\n' "$openwebui_port"
+  if [[ "$ENABLE_GOOGLE_DRIVE_INTEGRATION" == 'true' ]]; then
+    printf 'Sincronização Google Drive: habilitada e gerenciada no painel administrativo.\n\n'
+  fi
 }
 
 main() {
@@ -827,6 +908,7 @@ main() {
   success "Configuração concluída; iniciando instalação não interativa"
   install_dependencies
   create_local_structure
+  configure_google_drive_sync
   create_proxy_credentials
   create_environment_file
   install_codebase_memory
@@ -838,6 +920,7 @@ main() {
   run_step "Aguardando a Admin UI do AgentGateway ficar disponível" validate_agentgateway_command
   run_step "Baixando modelos e configurando o Open WebUI" validate_openwebui_command
   run_step "Sincronizando a credencial administrativa do Open WebUI" migrate_openwebui_admin_command
+  run_step "Validando o worker do Google Drive" restart_and_validate_knowledge_sync_command
   show_summary
 }
 

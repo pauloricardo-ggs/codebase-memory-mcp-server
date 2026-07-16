@@ -75,6 +75,9 @@ services:
       AGENTGATEWAY_ADMIN_URL: http://agentgateway:15000
       MCP_GUARDRAIL_ADDR: 0.0.0.0:3001
       MCP_GUARDRAIL_HOST: admin:3001
+      KNOWLEDGE_SYNC_ENABLED: "${ENABLE_GOOGLE_DRIVE_INTEGRATION:-false}"
+      KNOWLEDGE_SYNC_URL: http://knowledge-sync:3002
+      KNOWLEDGE_SYNC_TOKEN_FILE: /data/app/secrets/knowledge-sync-token
     volumes:
       - ./data:/data/app
       - ./repositories:/data/repositories
@@ -226,6 +229,38 @@ services:
     volumes:
       - ./openwebui/bootstrap:/bootstrap:ro
       - ./data/secrets:/run/cbm-secrets:ro
+
+  knowledge-sync:
+    profiles: ["google-drive"]
+    build:
+      context: ./knowledge-sync
+    image: codebase-memory-knowledge-sync:0.1.0
+    user: "${LOCAL_UID}:${LOCAL_GID}"
+    init: true
+    restart: unless-stopped
+    depends_on:
+      open-webui:
+        condition: service_healthy
+    env_file:
+      - ./data/secrets/openwebui.env
+    environment:
+      PORT: "3002"
+      SYNC_DATA_DIR: /data
+      OPENWEBUI_URL: http://open-webui:8080
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-drive-service-account.json
+      KNOWLEDGE_SYNC_TOKEN_FILE: /run/secrets/knowledge-sync-token
+    volumes:
+      - ./data/knowledge-sync:/data
+      - ./data/secrets/google-drive-service-account.json:/run/secrets/google-drive-service-account.json:ro
+      - ./data/secrets/knowledge-sync-token:/run/secrets/knowledge-sync-token:ro
+    expose:
+      - "3002"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
 volumes:
   ollama-data:
