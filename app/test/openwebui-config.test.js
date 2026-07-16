@@ -68,6 +68,11 @@ test('presets de exemplo selecionam o padrão e carregam parâmetros e integraç
   assert.equal(manifest.models[0].params.temperature, 0.3);
   assert.deepEqual(manifest.models[1].meta.toolIds, ['server:mcp:mcp-admin']);
   assert.match(manifest.models[0].params.system, /fontes divergirem/);
+  assert.match(manifest.models[0].params.system, /filesystem virtual e isolado/);
+  assert.match(manifest.models[0].params.system, /tree ou ls -a/);
+  assert.match(manifest.models[0].params.system, /nunca conclua que a base está vazia depois de apenas um ls/);
+  assert.match(manifest.models[0].params.system, /query_knowledge_files/);
+  assert.match(manifest.models[0].params.system, /Google Drive \(gerenciado\)/);
   assert.match(manifest.models[1].params.system, /acesso administrativo total/);
 });
 
@@ -330,7 +335,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
     await writeFile(path.join(temporaryRoot, '.env'), `OPENWEBUI_PORT=${server.address().port}\n`);
     await writeFile(
       path.join(temporaryRoot, 'data/secrets/openwebui.env'),
-      'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=admin@local.invalid\nWEBUI_ADMIN_PASSWORD=senha-antiga\nWEBUI_ADMIN_NAME=admin@local.invalid\nWEBUI_SECRET_KEY=segredo-preservado\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\n'
+      'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=joao@exemplo.com\nWEBUI_ADMIN_PASSWORD=senha-antiga\nWEBUI_ADMIN_NAME=joao@exemplo.com\nWEBUI_SECRET_KEY=segredo-preservado\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\n'
     );
 
     await execFileAsync('bash', ['-c', `
@@ -347,7 +352,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
       env: {
         ...process.env,
         TEST_NEW_EMAIL: 'novo@example.com',
-        TEST_OLD_EMAIL: 'admin@local.invalid',
+        TEST_OLD_EMAIL: 'joao@exemplo.com',
         TEST_OLD_PASSWORD: 'senha-antiga',
         TEST_NEW_PASSWORD: 'senha-nova'
       }
@@ -357,7 +362,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
     assert.deepEqual(requests[0], {
       url: '/api/v1/auths/signin',
       authorization: undefined,
-      payload: { email: 'admin@local.invalid', password: 'senha-antiga' }
+      payload: { email: 'joao@exemplo.com', password: 'senha-antiga' }
     });
     assert.deepEqual(requests[1], {
       url: '/api/v1/users/admin-id/update',

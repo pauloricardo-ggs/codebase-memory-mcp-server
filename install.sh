@@ -389,7 +389,7 @@ ask_proxy_access() {
   fi
   suggested_email="${OPENWEBUI_PREVIOUS_EMAIL:-$(read_existing_environment_value ADMIN_EMAIL)}"
   suggested_email="${suggested_email:-$existing_username}"
-  [[ "$suggested_email" == *@*.* ]] || suggested_email='admin@local.invalid'
+  [[ "$suggested_email" == *@*.* ]] || suggested_email='joao@exemplo.com'
 
   printf "\n${COLOR_BOLD}Acesso ao painel${COLOR_RESET}\n"
   while true; do
