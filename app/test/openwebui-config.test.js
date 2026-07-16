@@ -44,9 +44,10 @@ test('presets de exemplo selecionam o padrão e carregam parâmetros e integraç
 });
 
 test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF interno', async () => {
-  const [html, browser, server] = await Promise.all([
+  const [html, browser, styles, server] = await Promise.all([
     readFile(path.join(root, 'app/public/index.html'), 'utf8'),
     readFile(path.join(root, 'app/public/app.js'), 'utf8'),
+    readFile(path.join(root, 'app/public/styles.css'), 'utf8'),
     readFile(path.join(root, 'app/src/server.js'), 'utf8')
   ]);
   assert.match(html, /data-view="knowledge-sync"/);
@@ -56,6 +57,10 @@ test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF intern
   assert.match(browser, /drive-credentials-file/);
   assert.match(browser, /save-drive-credentials/);
   assert.match(browser, /test-drive-credentials/);
+  assert.match(browser, /refreshKnowledgeSyncRows/);
+  assert.doesNotMatch(browser, /setInterval\(\(\) => \{ if \(currentView === 'knowledge-sync'\) renderKnowledgeSync/);
+  assert.match(styles, /knowledge-sync-identity \.workspace-icon \{[^}]*border-radius:50%/);
+  assert.match(styles, /knowledge-sync-actions \{[^}]*grid-column:1 \/ -1/);
   assert.match(server, /url\.pathname\.startsWith\('\/api\/knowledge-sync'\)/);
   assert.match(server, /KNOWLEDGE_SYNC_TOKEN_FILE/);
   assert.match(server, /GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE/);

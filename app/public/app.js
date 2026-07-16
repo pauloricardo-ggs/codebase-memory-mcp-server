@@ -12,6 +12,8 @@ let currentMcpUsers = [];
 let knowledgeSyncTargets = [];
 let knowledgeSyncFolders = [];
 let selectedDriveFolders = new Map();
+let knowledgeSyncDriveConfigured = false;
+let knowledgeSyncRefreshInFlight = false;
 let publicConfig = {};
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]);
@@ -133,18 +135,30 @@ function syncStatusLabel(target) {
   return target ? 'Aguardando' : 'Sem vínculo';
 }
 
-function knowledgeSyncRow(knowledgeBase, target, driveConfigured) {
+function knowledgeSyncStats(target) {
   const status = syncStatusLabel(target);
   const statusClass = target?.running ? 'running' : target?.lastRunStatus === 'failed' ? 'failed' : target?.enabled ? 'active' : 'revoked';
+  return `<small>Sincronização</small><span class="status ${statusClass}">${status}</span>${target ? `<span>${target.managedFileCount} arquivo${target.managedFileCount === 1 ? '' : 's'} · a cada ${target.intervalMinutes} min</span><span>Última: ${date(target.lastRunAt)}</span>` : '<span>Configure para iniciar</span>'}${target?.lastError ? `<span class="sync-error" title="${escapeHtml(target.lastError)}">${escapeHtml(target.lastError)}</span>` : ''}`;
+}
+
+function knowledgeSyncActions(knowledgeBase, target, driveConfigured) {
+  return `${target ? `<button class="button small" data-action="run-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${target.running || !driveConfigured ? 'disabled' : ''}>Sincronizar agora</button><button class="button small" data-action="toggle-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target.enabled ? 'Pausar' : 'Ativar'}</button><button class="button small" data-action="knowledge-sync-history" data-kb="${escapeHtml(knowledgeBase.id)}">Histórico</button><button class="button small danger" data-action="delete-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}">Desvincular</button>` : ''}
+    <button class="button small ${target ? '' : 'primary'}" data-action="configure-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target ? 'Editar vínculo' : 'Vincular pastas'}</button>`;
+}
+
+const knowledgeSyncTargetSignature = target => JSON.stringify(target || null);
+
+function knowledgeSyncFolderMarkup(target) {
   const folders = target?.folders || [];
-  return `<article class="knowledge-sync-row">
+  return `<small>Pastas do Drive</small>${folders.length ? `<div>${folders.map(folder => `<span class="folder-chip" title="${escapeHtml(folder.id)}">▣ ${escapeHtml(folder.name)}</span>`).join('')}</div>` : '<span class="subtle">Nenhuma pasta vinculada</span>'}`;
+}
+
+function knowledgeSyncRow(knowledgeBase, target, driveConfigured) {
+  return `<article class="knowledge-sync-row" data-knowledge-base-id="${escapeHtml(knowledgeBase.id)}" data-knowledge-base-name="${escapeHtml(knowledgeBase.name)}">
     <div class="knowledge-sync-identity"><span class="workspace-icon">KB</span><div><strong>${escapeHtml(knowledgeBase.name)}</strong><small>${escapeHtml(knowledgeBase.description || `ID: ${knowledgeBase.id}`)}</small></div></div>
-    <div class="knowledge-sync-folders"><small>Pastas do Drive</small>${folders.length ? `<div>${folders.map(folder => `<span class="folder-chip" title="${escapeHtml(folder.id)}">▣ ${escapeHtml(folder.name)}</span>`).join('')}</div>` : '<span class="subtle">Nenhuma pasta vinculada</span>'}</div>
-    <div class="knowledge-sync-stats"><small>Sincronização</small><span class="status ${statusClass}">${status}</span>${target ? `<span>${target.managedFileCount} arquivo${target.managedFileCount === 1 ? '' : 's'} · a cada ${target.intervalMinutes} min</span><span>Última: ${date(target.lastRunAt)}</span>` : '<span>Configure para iniciar</span>'}${target?.lastError ? `<span class="sync-error" title="${escapeHtml(target.lastError)}">${escapeHtml(target.lastError)}</span>` : ''}</div>
-    <div class="repo-actions">
-      ${target ? `<button class="button small" data-action="run-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${target.running || !driveConfigured ? 'disabled' : ''}>Sincronizar agora</button><button class="button small" data-action="toggle-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target.enabled ? 'Pausar' : 'Ativar'}</button><button class="button small" data-action="knowledge-sync-history" data-kb="${escapeHtml(knowledgeBase.id)}">Histórico</button><button class="button small danger" data-action="delete-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}">Desvincular</button>` : ''}
-      <button class="button small ${target ? '' : 'primary'}" data-action="configure-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target ? 'Editar vínculo' : 'Vincular pastas'}</button>
-    </div>
+    <div class="knowledge-sync-folders">${knowledgeSyncFolderMarkup(target)}</div>
+    <div class="knowledge-sync-stats">${knowledgeSyncStats(target)}</div>
+    <div class="repo-actions knowledge-sync-actions">${knowledgeSyncActions(knowledgeBase, target, driveConfigured)}</div>
   </article>`;
 }
 
@@ -158,15 +172,48 @@ async function renderKnowledgeSync() {
     api('/api/knowledge-sync/knowledge-bases'),
     api('/api/knowledge-sync/targets')
   ]);
+  knowledgeSyncDriveConfigured = status.configured;
   knowledgeSyncTargets = targetData.targets;
   const linked = new Map(knowledgeSyncTargets.map(target => [target.knowledgeBaseId, target]));
   const credentialState = status.configured
     ? `<span class="status active">Configurada</span><p>Compartilhe as pastas com <code>${escapeHtml(status.serviceAccountEmail)}</code>.</p><div class="repo-actions"><button class="button small" data-action="copy-drive-email" data-email="${escapeHtml(status.serviceAccountEmail)}">Copiar e-mail</button><button class="button small" data-action="test-drive-credentials">Testar conexão</button><button class="button small" data-action="configure-drive-credentials">Substituir JSON</button><button class="button small danger" data-action="remove-drive-credentials">Remover</button></div>`
     : `<span class="status revoked">Não configurada</span><p>Envie o JSON da Service Account para habilitar a seleção de pastas e as sincronizações. Nenhuma credencial é solicitada durante a instalação.</p><button class="button small primary" data-action="configure-drive-credentials">Configurar Google Drive</button>`;
-  content.innerHTML = `<article class="drive-config-card"><div><small>CONTA DE SERVIÇO</small><h2>Credenciais do Google Drive</h2>${credentialState}${status.credentialsError ? `<p class="sync-error">${escapeHtml(status.credentialsError)}</p>` : ''}</div><div class="drive-config-meta"><span><small>Projeto</small><strong>${escapeHtml(status.projectId || '—')}</strong></span><span><small>Vínculos</small><strong>${knowledgeSyncTargets.length}</strong></span></div></article>
-    <div class="access-banner ${status.configured ? '' : 'open'}"><div><strong>${status.configured ? 'Sincronização automática disponível' : 'Worker instalado e aguardando configuração'}</strong><p>${status.configured ? 'Cada vínculo envia arquivos somente para a Knowledge Base selecionada.' : 'O serviço permanece ocioso até uma Service Account ser cadastrada e uma pasta ser vinculada.'}</p></div><code>${knowledgeSyncTargets.length} vínculo${knowledgeSyncTargets.length === 1 ? '' : 's'}</code></div>
+  content.innerHTML = `<article class="drive-config-card"><div><small>CONTA DE SERVIÇO</small><h2>Credenciais do Google Drive</h2>${credentialState}${status.credentialsError ? `<p class="sync-error">${escapeHtml(status.credentialsError)}</p>` : ''}</div><div class="drive-config-meta"><span><small>Projeto</small><strong>${escapeHtml(status.projectId || '—')}</strong></span><span><small>Vínculos</small><strong data-knowledge-sync-count>${knowledgeSyncTargets.length}</strong></span></div></article>
+    <div class="access-banner ${status.configured ? '' : 'open'}"><div><strong>${status.configured ? 'Sincronização automática disponível' : 'Worker instalado e aguardando configuração'}</strong><p>${status.configured ? 'Cada vínculo envia arquivos somente para a Knowledge Base selecionada.' : 'O serviço permanece ocioso até uma Service Account ser cadastrada e uma pasta ser vinculada.'}</p></div><code data-knowledge-sync-count-label>${knowledgeSyncTargets.length} vínculo${knowledgeSyncTargets.length === 1 ? '' : 's'}</code></div>
     <div class="toolbar"><span class="subtle">${baseData.knowledgeBases.length} Knowledge Base${baseData.knowledgeBases.length === 1 ? '' : 's'} encontrada${baseData.knowledgeBases.length === 1 ? '' : 's'}</span></div>
     ${baseData.knowledgeBases.length ? `<div class="knowledge-sync-list">${baseData.knowledgeBases.map(base => knowledgeSyncRow(base, linked.get(base.id), status.configured)).join('')}</div>` : '<div class="empty"><div><div class="empty-icon">KB</div><h2>Nenhuma Knowledge Base encontrada</h2><p>Crie uma base no Open WebUI antes de vincular pastas do Google Drive.</p></div></div>'}`;
+  $$('[data-knowledge-base-id]', content).forEach(row => {
+    row.dataset.targetSignature = knowledgeSyncTargetSignature(linked.get(row.dataset.knowledgeBaseId));
+  });
+}
+
+async function refreshKnowledgeSyncRows() {
+  if (currentView !== 'knowledge-sync' || knowledgeSyncRefreshInFlight) return;
+  knowledgeSyncRefreshInFlight = true;
+  try {
+    const { targets } = await api('/api/knowledge-sync/targets');
+    knowledgeSyncTargets = targets;
+    const linked = new Map(targets.map(target => [target.knowledgeBaseId, target]));
+    $$('[data-knowledge-base-id]', content).forEach(row => {
+      const target = linked.get(row.dataset.knowledgeBaseId);
+      const folders = $('.knowledge-sync-folders', row);
+      const stats = $('.knowledge-sync-stats', row);
+      const actions = $('.knowledge-sync-actions', row);
+      const base = { id: row.dataset.knowledgeBaseId, name: row.dataset.knowledgeBaseName };
+      const signature = knowledgeSyncTargetSignature(target);
+      if (row.dataset.targetSignature === signature) return;
+      folders.innerHTML = knowledgeSyncFolderMarkup(target);
+      stats.innerHTML = knowledgeSyncStats(target);
+      actions.innerHTML = knowledgeSyncActions(base, target, knowledgeSyncDriveConfigured);
+      row.dataset.targetSignature = signature;
+    });
+    const count = $('[data-knowledge-sync-count]', content);
+    const label = $('[data-knowledge-sync-count-label]', content);
+    if (count) count.textContent = String(targets.length);
+    if (label) label.textContent = `${targets.length} vínculo${targets.length === 1 ? '' : 's'}`;
+  } finally {
+    knowledgeSyncRefreshInFlight = false;
+  }
 }
 
 function driveCredentialsModal() {
@@ -599,4 +646,4 @@ document.addEventListener('click', async event => {
 publicConfig = await api('/api/config');
 await Promise.all([renderGithub(), renderWorkspaces(), refreshJobs()]);
 setInterval(refreshJobs, 3000);
-setInterval(() => { if (currentView === 'knowledge-sync') renderKnowledgeSync().catch(() => {}); }, 5000);
+setInterval(() => refreshKnowledgeSyncRows().catch(() => {}), 5000);
