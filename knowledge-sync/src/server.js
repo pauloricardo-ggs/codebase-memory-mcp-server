@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createServiceAccountAssertion, fileChecksum, folderRoot, GOOGLE_FOLDER_MIME, isTargetDue, MANAGED_ROOT, nextRunAt, normalizeTargetInput, publicTarget, sanitizeDriveName } from './lib.js';
+import { createServiceAccountAssertion, fileChecksum, folderRoot, GOOGLE_FOLDER_MIME, isTargetDue, MANAGED_ROOT, migrateTargetSchedule, nextRunAt, normalizeTargetInput, publicTarget, sanitizeDriveName, scheduledSlot } from './lib.js';
 
 const PORT = Number(process.env.PORT || 3002);
 const DATA_DIR = process.env.SYNC_DATA_DIR || '/data';
@@ -12,6 +12,7 @@ const OPENWEBUI_URL = String(process.env.OPENWEBUI_URL || 'http://open-webui:808
 const GOOGLE_API_URL = String(process.env.GOOGLE_API_URL || 'https://www.googleapis.com').replace(/\/+$/, '');
 const OPENWEBUI_EMAIL = process.env.WEBUI_ADMIN_EMAIL || '';
 const OPENWEBUI_PASSWORD = process.env.WEBUI_ADMIN_PASSWORD || '';
+const DEFAULT_SYNC_TIMEZONE = process.env.KNOWLEDGE_SYNC_TIMEZONE || 'America/Maceio';
 const HISTORY_LIMIT = 200;
 
 await mkdir(DATA_DIR, { recursive: true });
@@ -22,7 +23,7 @@ if (!OPENWEBUI_EMAIL || !OPENWEBUI_PASSWORD) throw new Error('Credencial adminis
 async function loadState() {
   try {
     const parsed = JSON.parse(await readFile(STATE_FILE, 'utf8'));
-    return { version: 1, targets: parsed.targets || [], history: parsed.history || [] };
+    return { version: parsed.version || 1, targets: parsed.targets || [], history: parsed.history || [] };
   } catch (error) {
     if (error.code === 'ENOENT') return { version: 1, targets: [], history: [] };
     throw error;
@@ -33,6 +34,8 @@ let state = await loadState();
 let mutation = Promise.resolve();
 let persistence = Promise.resolve();
 const running = new Set();
+const queued = new Set();
+let executionQueue = Promise.resolve();
 let googleCredentials = null;
 let googleCredentialsRaw = '';
 let googleCredentialsError = null;
@@ -87,6 +90,19 @@ function persist() {
   };
   persistence = persistence.then(operation, operation);
   return persistence;
+}
+
+let scheduleMigrationNeeded = state.version < 2;
+state.targets = state.targets.map(target => {
+  const migration = migrateTargetSchedule(target, DEFAULT_SYNC_TIMEZONE);
+  scheduleMigrationNeeded ||= migration.changed;
+  return migration.target;
+});
+state.version = 2;
+if (scheduleMigrationNeeded) await persist();
+
+function isBusy(knowledgeBaseId) {
+  return running.has(knowledgeBaseId) || queued.has(knowledgeBaseId);
 }
 
 function json(response, status, payload) {
@@ -476,14 +492,28 @@ async function executeTarget(target, trigger) {
   }
 }
 
-function runTarget(knowledgeBaseId, trigger = 'manual') {
-  const target = state.targets.find(item => item.knowledgeBaseId === knowledgeBaseId);
-  if (!target) throw new Error('Vínculo não encontrado.');
-  if (running.has(knowledgeBaseId)) throw new Error('Esta Knowledge Base já está sendo sincronizada.');
-  running.add(knowledgeBaseId);
-  executeTarget(target, trigger)
-    .catch(error => console.error(`Sincronização ${knowledgeBaseId} falhou:`, error.message))
-    .finally(() => running.delete(knowledgeBaseId));
+function runTarget(knowledgeBaseId, trigger = 'manual', scheduledFor = null) {
+  if (!state.targets.some(item => item.knowledgeBaseId === knowledgeBaseId)) throw new Error('Vínculo não encontrado.');
+  if (isBusy(knowledgeBaseId)) throw new Error('Esta Knowledge Base já está na fila de sincronização.');
+  queued.add(knowledgeBaseId);
+  const operation = async () => {
+    queued.delete(knowledgeBaseId);
+    const target = state.targets.find(item => item.knowledgeBaseId === knowledgeBaseId);
+    if (!target) return;
+    running.add(knowledgeBaseId);
+    try {
+      if (scheduledFor) {
+        target.lastScheduledAt = scheduledFor;
+        await persist();
+      }
+      await executeTarget(target, trigger);
+    } catch (error) {
+      console.error(`Sincronização ${knowledgeBaseId} falhou:`, error.message);
+    } finally {
+      running.delete(knowledgeBaseId);
+    }
+  };
+  executionQueue = executionQueue.then(operation, operation);
 }
 
 async function authorize(request) {
@@ -502,7 +532,9 @@ async function route(request, response, url) {
       serviceAccountEmail: googleCredentials?.client_email || null,
       projectId: googleCredentials?.project_id || null,
       credentialsError: googleCredentialsError,
+      defaultTimezone: DEFAULT_SYNC_TIMEZONE,
       running: [...running],
+      queued: [...queued],
       targetCount: state.targets.length
     });
   }
@@ -546,7 +578,7 @@ async function route(request, response, url) {
     return json(response, 200, { folders: visible, serviceAccountEmail: googleCredentials.client_email });
   }
   if (request.method === 'GET' && url.pathname === '/api/targets') {
-    return json(response, 200, { targets: state.targets.map(item => publicTarget(item, running.has(item.knowledgeBaseId))) });
+    return json(response, 200, { targets: state.targets.map(item => publicTarget(item, isBusy(item.knowledgeBaseId))) });
   }
   if (request.method === 'GET' && url.pathname === '/api/history') {
     const knowledgeBaseId = url.searchParams.get('knowledgeBaseId');
@@ -567,7 +599,7 @@ async function route(request, response, url) {
 
   const match = url.pathname.match(/^\/api\/targets\/([A-Za-z0-9_-]+)(?:\/(run))?$/);
   if (match && request.method === 'PUT' && !match[2]) {
-    if (running.has(match[1])) throw new Error('Aguarde a sincronização atual terminar antes de alterar o vínculo.');
+    if (isBusy(match[1])) throw new Error('Aguarde a sincronização atual terminar antes de alterar o vínculo.');
     const input = normalizeTargetInput({ ...(await requestBody(request)), knowledgeBaseId: match[1] });
     const bases = await listKnowledgeBases();
     const knowledge = bases.find(item => item.id === input.knowledgeBaseId);
@@ -589,14 +621,14 @@ async function route(request, response, url) {
       await persist();
     });
     const target = state.targets.find(item => item.knowledgeBaseId === input.knowledgeBaseId);
-    return json(response, 200, { target: publicTarget(target, running.has(target.knowledgeBaseId)) });
+    return json(response, 200, { target: publicTarget(target, isBusy(target.knowledgeBaseId)) });
   }
   if (match && request.method === 'POST' && match[2] === 'run') {
     runTarget(match[1], 'manual');
     return json(response, 202, { accepted: true });
   }
   if (match && request.method === 'DELETE' && !match[2]) {
-    if (running.has(match[1])) throw new Error('Aguarde a sincronização atual terminar antes de desvincular a base.');
+    if (isBusy(match[1])) throw new Error('Aguarde a sincronização atual terminar antes de desvincular a base.');
     const target = state.targets.find(item => item.knowledgeBaseId === match[1]);
     if (!target) throw new Error('Vínculo não encontrado.');
     if (url.searchParams.get('deleteFiles') === 'true') {
@@ -615,8 +647,8 @@ async function route(request, response, url) {
 async function checkSchedules() {
   if (!await refreshGoogleCredentials(false)) return;
   for (const target of state.targets) {
-    if (isTargetDue(target) && !running.has(target.knowledgeBaseId)) {
-      try { runTarget(target.knowledgeBaseId, 'schedule'); }
+    if (isTargetDue(target) && !isBusy(target.knowledgeBaseId)) {
+      try { runTarget(target.knowledgeBaseId, 'schedule', scheduledSlot(target)); }
       catch (error) { console.error(`Não foi possível agendar ${target.knowledgeBaseId}:`, error.message); }
     }
   }

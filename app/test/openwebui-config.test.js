@@ -18,6 +18,16 @@ test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker permanente'
   assert.match(compose, /CONTENT_EXTRACTION_ENGINE: docling/);
   assert.match(compose, /RAG_EMBEDDING_MODEL: bge-m3/);
   assert.match(compose, /DOCLING_SERVER_URL: http:\/\/docling:5001/);
+  assert.match(compose, /docling-serve-cpu:\$\{DOCLING_VERSION:-v1\.26\.0\}/);
+  assert.match(compose, /DOCLING_DEVICE: cpu/);
+  assert.match(compose, /DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "1"/);
+  assert.match(compose, /DOCLING_SERVE_ENG_LOC_SHARE_MODELS: "true"/);
+  assert.match(compose, /DOCLING_NUM_THREADS: "\$\{DOCLING_CPU_THREADS:-6\}"/);
+  assert.match(compose, /condition: service_healthy/);
+  assert.doesNotMatch(compose, /docling-data/);
+  assert.match(compose, /RAG_RERANKING_MODEL: "\$\{RAG_RERANKING_MODEL-BAAI\/bge-reranker-v2-m3\}"/);
+  assert.match(compose, /RAG_TOP_K: "\$\{RAG_TOP_K:-20\}"/);
+  assert.match(compose, /RAG_TOP_K_RERANKER: "\$\{RAG_TOP_K_RERANKER:-8\}"/);
   assert.match(compose, /MCP_ADMIN_URL: http:\/\/proxy:8080\/mcp/);
   assert.match(compose, /\.\/data\/secrets:\/run\/cbm-secrets:ro/);
   assert.match(compose, /ollama-data:/);
@@ -99,6 +109,9 @@ test('painel administra vínculos entre pastas e Knowledge Bases pelo BFF intern
   assert.match(browser, /save-drive-picker/);
   assert.match(browser, /remove-drive-picker/);
   assert.match(browser, /\/api\/knowledge-sync\/picker-config/);
+  for (const field of ['minute', 'hour', 'day', 'month', 'weekday']) assert.match(browser, new RegExp(`knowledge-sync-cron-${field}`));
+  assert.match(browser, /knowledge-sync-timezone/);
+  assert.doesNotMatch(browser, /knowledge-sync-interval/);
   assert.match(browser, /refreshKnowledgeSyncRows/);
   assert.doesNotMatch(browser, /setInterval\(\(\) => \{ if \(currentView === 'knowledge-sync'\) renderKnowledgeSync/);
   assert.match(styles, /knowledge-sync-identity \.workspace-icon \{[^}]*border-radius:50%/);
@@ -133,6 +146,9 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   const compose = await readFile(path.join(root, 'compose.yaml'), 'utf8');
   assert.match(install, /OLLAMA_VERSION='0\.32\.1'/);
   assert.match(install, /OLLAMA_CHAT_MODEL='gemma4:e2b'/);
+  assert.match(install, /DOCLING_VERSION='v1\.26\.0'/);
+  assert.match(install, /DOCLING_CPU_THREADS='6'/);
+  assert.match(install, /RAG_RERANKING_MODEL='BAAI\/bge-reranker-v2-m3'/);
   assert.match(install, /gemma4:e4b \(Gemma 4 Effective 4B\)/);
   assert.match(compose, /OLLAMA_VERSION:-0\.32\.1/);
   assert.match(compose, /OLLAMA_CHAT_MODEL:-gemma4:e2b/);
@@ -166,6 +182,8 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   assert.match(bootstrap, /\{model:\$model,stream:false\}/);
   assert.doesNotMatch(bootstrap, /\{name:\$model,stream:false\}/);
   assert.match(bootstrap, /configs\/tool_servers\/verify/);
+  assert.match(bootstrap, /retrieval\/config\/update/);
+  assert.match(bootstrap, /RAG_RERANKING_MODEL/);
   assert.match(bootstrap, /config:\{enable:true\}/);
   assert.match(bootstrap, /\.base_model_id = \$chat_model/);
   if (process.platform !== 'win32') {

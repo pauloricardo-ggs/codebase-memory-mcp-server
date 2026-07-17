@@ -42,6 +42,8 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
   let fileContent = 'primeira versão';
   let uploadSequence = 0;
   let directorySequence = 0;
+  let activeUploads = 0;
+  let maxConcurrentUploads = 0;
   let pickerConfig = {
     'google_drive.enable': false,
     'google_drive.client_id': '',
@@ -55,8 +57,9 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       response.end(JSON.stringify({ access_token: 'google-token', expires_in: 3600 }));
       return;
     }
-    if (url.pathname === '/drive/v3/files/folder-A') {
-      response.end(JSON.stringify({ id: 'folder-A', name: 'Pasta A', mimeType: 'application/vnd.google-apps.folder', parents: [], trashed: false }));
+    if (url.pathname === '/drive/v3/files/folder-A' || url.pathname === '/drive/v3/files/folder-B') {
+      const id = url.pathname.endsWith('folder-B') ? 'folder-B' : 'folder-A';
+      response.end(JSON.stringify({ id, name: id === 'folder-B' ? 'Pasta B' : 'Pasta A', mimeType: 'application/vnd.google-apps.folder', parents: [], trashed: false }));
       return;
     }
     if (url.pathname === '/drive/v3/files/file-A' && url.searchParams.get('alt') === 'media') {
@@ -64,12 +67,22 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       response.end(fileContent);
       return;
     }
+    if (url.pathname === '/drive/v3/files/file-B' && url.searchParams.get('alt') === 'media') {
+      response.setHeader('content-type', 'text/plain');
+      response.end('arquivo da base B');
+      return;
+    }
     if (url.pathname === '/drive/v3/files') {
       const query = url.searchParams.get('q') || '';
       if (query.includes("'folder-A' in parents")) {
         response.end(JSON.stringify({ files: [{ id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false }] }));
+      } else if (query.includes("'folder-B' in parents")) {
+        response.end(JSON.stringify({ files: [{ id: 'file-B', name: 'base-b.txt', mimeType: 'text/plain', modifiedTime: '2026-01-03T00:00:00Z', size: '17', parents: ['folder-B'], trashed: false }] }));
       } else {
-        response.end(JSON.stringify({ files: [{ id: 'folder-A', name: 'Pasta A', mimeType: 'application/vnd.google-apps.folder', parents: [], trashed: false }] }));
+        response.end(JSON.stringify({ files: [
+          { id: 'folder-A', name: 'Pasta A', mimeType: 'application/vnd.google-apps.folder', parents: [], trashed: false },
+          { id: 'folder-B', name: 'Pasta B', mimeType: 'application/vnd.google-apps.folder', parents: [], trashed: false }
+        ] }));
       }
       return;
     }
@@ -102,17 +115,24 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       return;
     }
     if (request.url === '/api/v1/knowledge/?page=1') {
-      response.end(JSON.stringify({ items: [{ id: 'kb-A', name: 'Base A', description: '', write_access: true }], total: 1 }));
+      response.end(JSON.stringify({ items: [
+        { id: 'kb-A', name: 'Base A', description: '', write_access: true },
+        { id: 'kb-B', name: 'Base B', description: '', write_access: true }
+      ], total: 2 }));
       return;
     }
-    if (request.url === '/api/v1/knowledge/kb-A/dirs/create') {
+    if (/^\/api\/v1\/knowledge\/kb-[AB]\/dirs\/create$/.test(request.url)) {
       directorySequence += 1;
       response.end(JSON.stringify({ id: `dir-${directorySequence}` }));
       return;
     }
     if (request.url === '/api/v1/files/') {
+      activeUploads += 1;
+      maxConcurrentUploads = Math.max(maxConcurrentUploads, activeUploads);
+      await new Promise(resolve => setTimeout(resolve, 40));
       uploadSequence += 1;
       uploads.push(raw.toString('utf8'));
+      activeUploads -= 1;
       response.end(JSON.stringify({ id: `uploaded-${uploadSequence}` }));
       return;
     }
@@ -198,9 +218,14 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     response = await fetch(`${workerUrl}/api/targets/kb-A`, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ knowledgeBaseName: 'Base A', folders: [{ id: 'folder-A', name: 'Pasta A' }], intervalMinutes: 60 })
+      body: JSON.stringify({ knowledgeBaseName: 'Base A', folders: [{ id: 'folder-A', name: 'Pasta A' }], cron: '30 * * * *', timezone: 'America/Maceio' })
     });
-    assert.equal(response.status, 200, await response.text());
+    const configuredBody = await response.text();
+    assert.equal(response.status, 200, configuredBody);
+    const configured = JSON.parse(configuredBody);
+    assert.equal(configured.target.cron, '30 * * * *');
+    assert.equal(configured.target.timezone, 'America/Maceio');
+    assert.equal(configured.target.scheduleDescription, 'A cada hora, no minuto 30');
 
     response = await fetch(`${workerUrl}/api/targets/kb-A/run`, { method: 'POST', headers });
     assert.equal(response.status, 202);
@@ -228,6 +253,29 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     }
     assert.equal(uploads.length, 2);
     assert.deepEqual(cleanups, [{ file_ids: ['uploaded-1'], dir_ids: [] }]);
+
+    response = await fetch(`${workerUrl}/api/targets/kb-B`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ knowledgeBaseName: 'Base B', folders: [{ id: 'folder-B', name: 'Pasta B' }], cron: '30 * * * *', timezone: 'America/Maceio' })
+    });
+    assert.equal(response.status, 200, await response.text());
+    modifiedTime = '2026-01-04T00:00:00Z';
+    fileContent = 'terceira versão';
+    maxConcurrentUploads = 0;
+    const [runA, runB] = await Promise.all([
+      fetch(`${workerUrl}/api/targets/kb-A/run`, { method: 'POST', headers }),
+      fetch(`${workerUrl}/api/targets/kb-B/run`, { method: 'POST', headers })
+    ]);
+    assert.equal(runA.status, 202);
+    assert.equal(runB.status, 202);
+    for (let attempt = 0; attempt < 160; attempt += 1) {
+      const current = await fetch(`${workerUrl}/api/targets`, { headers }).then(value => value.json());
+      if (current.targets.length === 2 && current.targets.every(target => target.lastRunStatus === 'completed' && !target.running)) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.equal(uploads.length, 4);
+    assert.equal(maxConcurrentUploads, 1, 'uploads de bases diferentes devem usar a fila sequencial');
   } catch (error) {
     error.message += `\nWorker output:\n${childOutput}`;
     throw error;

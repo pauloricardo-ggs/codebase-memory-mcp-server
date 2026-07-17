@@ -162,19 +162,28 @@ services:
       start_period: 15s
 
   docling:
-    image: quay.io/docling-project/docling-serve:${DOCLING_VERSION:-latest}
+    image: quay.io/docling-project/docling-serve-cpu:${DOCLING_VERSION:-v1.26.0}
     restart: unless-stopped
     environment:
       DOCLING_SERVE_ENABLE_UI: "false"
       DOCLING_SERVE_MAX_SYNC_WAIT: "600"
-      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "${DOCLING_WORKERS:-2}"
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "1"
+      DOCLING_SERVE_ENG_LOC_SHARE_MODELS: "true"
+      DOCLING_SERVE_OPTIONS_CACHE_SIZE: "1"
+      DOCLING_SERVE_LOAD_MODELS_AT_BOOT: "false"
+      DOCLING_DEVICE: cpu
+      DOCLING_NUM_THREADS: "${DOCLING_CPU_THREADS:-6}"
       UVICORN_WORKERS: "1"
-      OMP_NUM_THREADS: "${DOCLING_CPU_THREADS:-4}"
-      MKL_NUM_THREADS: "${DOCLING_CPU_THREADS:-4}"
+      OMP_NUM_THREADS: "${DOCLING_CPU_THREADS:-6}"
+      MKL_NUM_THREADS: "${DOCLING_CPU_THREADS:-6}"
     expose:
       - "5001"
-    volumes:
-      - docling-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
 
   open-webui:
     build:
@@ -183,7 +192,7 @@ services:
     restart: unless-stopped
     depends_on:
       docling:
-        condition: service_started
+        condition: service_healthy
     env_file:
       - ./data/secrets/openwebui.env
     environment:
@@ -194,6 +203,11 @@ services:
       DOCLING_SERVER_URL: http://docling:5001
       DOCLING_PARAMS: '{"do_ocr":true,"force_ocr":false,"table_mode":"accurate","pipeline":"standard","ocr_engine":"tesseract","ocr_lang":["por","eng"]}'
       ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_RERANKING_ENGINE: ""
+      RAG_RERANKING_MODEL: "${RAG_RERANKING_MODEL-BAAI/bge-reranker-v2-m3}"
+      RAG_RERANKING_BATCH_SIZE: "${RAG_RERANKING_BATCH_SIZE:-4}"
+      RAG_TOP_K: "${RAG_TOP_K:-20}"
+      RAG_TOP_K_RERANKER: "${RAG_TOP_K_RERANKER:-8}"
       ENABLE_KB_EXEC: "true"
       ENABLE_SIGNUP: "false"
       DEFAULT_USER_ROLE: pending
@@ -225,6 +239,10 @@ services:
       OLLAMA_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
       OLLAMA_CHAT_MODEL: "${OLLAMA_CHAT_MODEL:-gemma4:e2b}"
       OLLAMA_EMBEDDING_MODEL: bge-m3
+      RAG_RERANKING_MODEL: "${RAG_RERANKING_MODEL-BAAI/bge-reranker-v2-m3}"
+      RAG_RERANKING_BATCH_SIZE: "${RAG_RERANKING_BATCH_SIZE:-4}"
+      RAG_TOP_K: "${RAG_TOP_K:-20}"
+      RAG_TOP_K_RERANKER: "${RAG_TOP_K_RERANKER:-8}"
       MCP_ADMIN_URL: http://proxy:8080/mcp
       MCP_SYSTEM_TOKEN_FILE: /run/cbm-secrets/mcp-system-token
     volumes:
@@ -249,6 +267,7 @@ services:
       OPENWEBUI_URL: http://open-webui:8080
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-drive-service-account.json
       KNOWLEDGE_SYNC_TOKEN_FILE: /run/secrets/knowledge-sync-token
+      KNOWLEDGE_SYNC_TIMEZONE: "${WORKSPACE_TIMEZONE:-America/Maceio}"
     volumes:
       - ./data/knowledge-sync:/data
       - ./data/secrets/knowledge-sync:/run/secrets:ro
@@ -263,5 +282,4 @@ services:
 
 volumes:
   ollama-data:
-  docling-data:
   openwebui-data:

@@ -90,12 +90,16 @@ A opção **Remover** apaga o arquivo do servidor e pausa os vínculos existente
 2. Associe cada modelo somente à sua respectiva base.
 3. Em **Bases e Drive**, localize a Knowledge Base e clique em **Vincular pastas**.
 4. Selecione uma ou mais pastas acessíveis à Service Account.
-5. Defina o intervalo, mantenha a rotina ativada e salve.
+5. Preencha os cinco campos do cron e o fuso horário. O padrão `30 * * * *` executa no minuto 30 de cada hora.
 6. Use **Sincronizar agora** para antecipar a primeira execução e acompanhe o histórico.
 
 Use **Pausar** para interromper novas verificações sem remover conteúdo. A ação **Desvincular** remove da Knowledge Base os arquivos enviados pelo worker e preserva os originais no Drive.
 
 Cada vínculo é isolado pelo ID da Knowledge Base. Arquivos da Pasta A enviados para a Base A não entram na Base B. Dentro da base, o worker cria a estrutura `Google Drive (gerenciado)/<pasta>--<id>/` e registra somente os arquivos que ele próprio enviou. Exclusões no Drive removem apenas esses arquivos gerenciados; uploads manuais são preservados.
+
+Quando mais de uma base vence no mesmo horário, o worker processa os vínculos sequencialmente. Isso evita que várias extrações Docling e indexações concorram por CPU e memória. A ação **Sincronizar agora** usa a mesma fila.
+
+O scheduler tolera reinícios: se o worker estiver indisponível no minuto exato, executará o último slot pendente quando voltar. O estado persistido impede a repetição do mesmo slot. Instalações antigas com intervalo de 60 minutos são migradas automaticamente para `30 * * * *`.
 
 O fluxo é unidirecional: alterações feitas no Drive chegam ao Open WebUI. Alterar ou remover arquivos diretamente na área gerenciada da base não modifica o Drive e pode ser revertido na próxima sincronização.
 
@@ -149,6 +153,8 @@ Não informe nem armazene o OAuth Client Secret; o Picker não o utiliza.
 | Worker indisponível | Consulte `docker compose ps knowledge-sync` e `docker compose logs knowledge-sync`. Ele é iniciado automaticamente pela instalação. |
 | Sincronização falha ao autenticar no Open WebUI | Execute novamente o instalador para recriar o worker com a credencial administrativa atual. |
 | Origem vazia | O worker preserva os arquivos existentes quando uma origem previamente preenchida retorna vazia. Verifique permissões e disponibilidade do Drive. |
+| Cron recusado | Use cinco campos (`minuto hora dia mês dia-da-semana`) e valores dentro dos intervalos exibidos no painel. |
+| Execução aguardando | Outro vínculo pode estar em processamento. Todas as bases compartilham uma fila sequencial. |
 | Picker manual não aparece | Confirme no painel que o card mostra **Ativado no Open WebUI** e recarregue a aba do Open WebUI. |
 
 </details>

@@ -33,6 +33,12 @@ OLLAMA_BASE_URL='http://ollama:11434'
 OLLAMA_COMPOSE_PROFILES='ollama-docker'
 OLLAMA_GPU_MODE='cpu'
 OLLAMA_GPU_DEVICE_IDS=''
+DOCLING_VERSION='v1.26.0'
+DOCLING_CPU_THREADS='6'
+RAG_RERANKING_MODEL='BAAI/bge-reranker-v2-m3'
+RAG_RERANKING_BATCH_SIZE='4'
+RAG_TOP_K='20'
+RAG_TOP_K_RERANKER='8'
 SYSTEM_PLATFORM=''
 SYSTEM_ARCHITECTURE="$(uname -m)"
 BREW_BIN=''
@@ -829,9 +835,23 @@ create_environment_file() {
     [[ -n "$existing_value" ]] && workspace_timezone="$existing_value"
     existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 20 )) && repository_sync_concurrency="$existing_value"
+    existing_value="$(sed -n 's/^DOCLING_VERSION=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[A-Za-z0-9._-]+$ ]] && DOCLING_VERSION="$existing_value"
+    existing_value="$(sed -n 's/^DOCLING_CPU_THREADS=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 64 )) && DOCLING_CPU_THREADS="$existing_value"
+    if grep -q '^RAG_RERANKING_MODEL=' "$ENV_FILE"; then
+      existing_value="$(sed -n 's/^RAG_RERANKING_MODEL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ -z "$existing_value" || "$existing_value" =~ ^[A-Za-z0-9._\/-]+$ ]] && RAG_RERANKING_MODEL="$existing_value"
+    fi
+    existing_value="$(sed -n 's/^RAG_RERANKING_BATCH_SIZE=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 64 )) && RAG_RERANKING_BATCH_SIZE="$existing_value"
+    existing_value="$(sed -n 's/^RAG_TOP_K=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 100 )) && RAG_TOP_K="$existing_value"
+    existing_value="$(sed -n 's/^RAG_TOP_K_RERANKER=//p' "$ENV_FILE" | tail -n 1)"
+    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 100 )) && RAG_TOP_K_RERANKER="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$OLLAMA_COMPOSE_PROFILES" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\nDOCLING_VERSION=%s\nDOCLING_CPU_THREADS=%s\nRAG_RERANKING_MODEL=%s\nRAG_RERANKING_BATCH_SIZE=%s\nRAG_TOP_K=%s\nRAG_TOP_K_RERANKER=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$OLLAMA_COMPOSE_PROFILES" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" "$DOCLING_VERSION" "$DOCLING_CPU_THREADS" "$RAG_RERANKING_MODEL" "$RAG_RERANKING_BATCH_SIZE" "$RAG_TOP_K" "$RAG_TOP_K_RERANKER" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"

@@ -8,6 +8,10 @@ set -eu
 : "${WEBUI_ADMIN_PASSWORD:?WEBUI_ADMIN_PASSWORD não configurado}"
 : "${OLLAMA_CHAT_MODEL:=gemma4:e2b}"
 : "${OLLAMA_EMBEDDING_MODEL:=bge-m3}"
+: "${RAG_RERANKING_MODEL:=}"
+: "${RAG_RERANKING_BATCH_SIZE:=4}"
+: "${RAG_TOP_K:=20}"
+: "${RAG_TOP_K_RERANKER:=8}"
 : "${MCP_ADMIN_URL:?MCP_ADMIN_URL não configurada}"
 : "${MCP_SYSTEM_TOKEN_FILE:?MCP_SYSTEM_TOKEN_FILE não configurado}"
 
@@ -47,6 +51,25 @@ auth_payload="$(jq -cn --arg email "$WEBUI_ADMIN_EMAIL" --arg password "$WEBUI_A
 auth_response="$(curl -fsS "$OPENWEBUI_URL/api/v1/auths/signin" -H 'content-type: application/json' -d "$auth_payload")"
 token="$(printf '%s' "$auth_response" | jq -er '.token')"
 authorization="Authorization: Bearer $token"
+
+rag_payload="$(jq -cn \
+  --arg reranking_model "$RAG_RERANKING_MODEL" \
+  --argjson reranking_batch_size "$RAG_RERANKING_BATCH_SIZE" \
+  --argjson top_k "$RAG_TOP_K" \
+  --argjson top_k_reranker "$RAG_TOP_K_RERANKER" \
+  '{
+    ENABLE_RAG_HYBRID_SEARCH:true,
+    RAG_RERANKING_ENGINE:"",
+    RAG_RERANKING_MODEL:$reranking_model,
+    RAG_RERANKING_BATCH_SIZE:$reranking_batch_size,
+    TOP_K:$top_k,
+    TOP_K_RERANKER:$top_k_reranker
+  }')"
+curl -fsS "$OPENWEBUI_URL/api/v1/retrieval/config/update" \
+  -H "$authorization" \
+  -H 'content-type: application/json' \
+  -d "$rag_payload" >/dev/null
+echo "RAG híbrido e reranking configurados"
 
 knowledge_list="$(curl -fsS "$OPENWEBUI_URL/api/v1/knowledge/" -H "$authorization")"
 knowledge_id="$(printf '%s' "$knowledge_list" | jq -r '(.items // .)[]? | select(.name == "Knowledge Base Sample") | .id' | head -n 1)"
