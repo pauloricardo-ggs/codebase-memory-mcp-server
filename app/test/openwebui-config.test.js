@@ -43,6 +43,53 @@ test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker permanente'
   assert.match(compose, /KNOWLEDGE_SYNC_ENABLED: "true"/);
   assert.match(compose, /GOOGLE_APPLICATION_CREDENTIALS: \/run\/secrets\/google-drive-service-account.json/);
   assert.match(compose, /KNOWLEDGE_SYNC_URL: http:\/\/knowledge-sync:3002/);
+  assert.match(compose, /^  prometheus:/m);
+  assert.match(compose, /^  grafana:/m);
+  assert.match(compose, /profiles: \["monitoring"\]/);
+  assert.match(compose, /data\/secrets\/monitoring\.env/);
+});
+
+test('Grafana provisiona dashboard operacional e Prometheus como datasource padrão', async () => {
+  const dashboard = JSON.parse(await readFile(path.join(root, 'monitoring/grafana/dashboards/codebase-memory-operation.json'), 'utf8'));
+  const datasource = await readFile(path.join(root, 'monitoring/grafana/provisioning/datasources/prometheus.yaml'), 'utf8');
+  const provider = await readFile(path.join(root, 'monitoring/grafana/provisioning/dashboards/codebase-memory.yaml'), 'utf8');
+  assert.equal(dashboard.uid, 'codebase-memory-operation');
+  assert.equal(dashboard.title, 'Codebase Memory — Operação');
+  assert.equal(dashboard.editable, false);
+  assert.ok(dashboard.panels.length >= 10);
+  const expressions = dashboard.panels.flatMap(panel => panel.targets || []).map(target => target.expr).join('\n');
+  for (const metric of ['up', 'drive_sync_runs_total', 'drive_sync_duration_seconds', 'drive_sync_files_total', 'cbm_jobs_total', 'cbm_job_duration_seconds', 'process_resident_memory_bytes']) {
+    assert.match(expressions, new RegExp(metric));
+  }
+  assert.match(datasource, /uid: prometheus/);
+  assert.match(datasource, /isDefault: true/);
+  assert.match(provider, /path: \/var\/lib\/grafana\/dashboards/);
+});
+
+test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e MCP', async () => {
+  const [compose, nginx, install] = await Promise.all([
+    readFile(path.join(root, 'compose.yaml'), 'utf8'),
+    readFile(path.join(root, 'nginx/nginx.conf'), 'utf8'),
+    readFile(path.join(root, 'install.sh'), 'utf8')
+  ]);
+  assert.match(compose, /ports:\n\s+- "\$\{UI_PORT:-8787\}:8080"/);
+  assert.doesNotMatch(compose, /OPENWEBUI_PORT|PROMETHEUS_PORT|GRAFANA_PORT|AGENTGATEWAY_UI_PORT/);
+  assert.doesNotMatch(compose, /^  graph-ui:/m);
+  assert.match(compose, /open-webui:[\s\S]*?expose:\n\s+- "8080"/);
+  assert.match(compose, /ADMIN_JWT_SECRET_FILE: \/data\/app\/secrets\/admin-jwt-secret/);
+  assert.match(compose, /WEBUI_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8787\}"/);
+  assert.match(compose, /GF_SERVER_ROOT_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8787\}\/grafana\/"/);
+  assert.match(compose, /GF_SERVER_SERVE_FROM_SUB_PATH: "true"/);
+  assert.match(nginx, /location \^~ \/grafana\//);
+  assert.match(nginx, /set \$grafana_upstream http:\/\/grafana:3000/);
+  assert.match(nginx, /proxy_pass \$grafana_upstream/);
+  assert.doesNotMatch(nginx, /proxy_pass http:\/\/prometheus/);
+  assert.match(nginx, /location \/ \{[\s\S]*proxy_pass http:\/\/open-webui:8080/);
+  assert.match(nginx, /location \/admin\/ \{[\s\S]*proxy_pass http:\/\/admin:3000\//);
+  assert.match(nginx, /location = \/mcp/);
+  assert.doesNotMatch(nginx, /auth_basic|mcp-panel|listen 8081/);
+  assert.match(install, /PUBLIC_BASE_URL=%s/);
+  assert.match(install, /ask_public_base_url/);
 });
 
 test('imagem derivada lê as credenciais persistentes do Picker em tempo de execução', async () => {
@@ -169,6 +216,10 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   assert.doesNotMatch(install, /API Key do Google Picker/);
   assert.doesNotMatch(install, /JSON da Service Account para sincronização/);
   assert.match(install, /COMPOSE_PROFILES/);
+  assert.match(install, /compose_profiles='monitoring'/);
+  assert.match(install, /validate_monitoring_command/);
+  const gatewayDockerfile = await readFile(path.join(root, 'agentgateway/Dockerfile'), 'utf8');
+  assert.match(gatewayDockerfile, /cgr\.dev\/chainguard\/git:latest@sha256:[a-f0-9]{64}/);
   assert.match(install, /restart_and_validate_knowledge_sync_command/);
   assert.match(install, /E-mail administrativo/);
   assert.match(install, /mínimo de 6 caracteres/);
@@ -268,7 +319,28 @@ test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
     assert.match(environment, /^OLLAMA_CHAT_MODEL=gemma4:e2b$/m);
     assert.match(environment, /^OLLAMA_RUNTIME=docker$/m);
     assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/ollama:11434$/m);
-    assert.match(environment, /^COMPOSE_PROFILES=ollama-docker$/m);
+    assert.match(environment, /^COMPOSE_PROFILES=ollama-docker,monitoring$/m);
+    assert.match(environment, /^PUBLIC_BASE_URL=http:\/\/localhost:8787$/m);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('instalador centraliza a URL pública e migra a configuração antiga do Grafana', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-public-url-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await writeFile(path.join(temporaryRoot, '.env'), 'GRAFANA_ROOT_URL=https://ia.empresa.com/grafana/\n');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      CBM_MEM_BUDGET_MB=8192
+      ADMIN_EMAIL=admin@example.com
+      ADMIN_USERNAME=admin@example.com
+      create_environment_file
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+    const environment = await readFile(path.join(temporaryRoot, '.env'), 'utf8');
+    assert.match(environment, /^PUBLIC_BASE_URL=https:\/\/ia\.empresa\.com$/m);
+    assert.doesNotMatch(environment, /GRAFANA_ROOT_URL/);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -381,7 +453,7 @@ test('modo host usa Metal, remove override NVIDIA e persiste a URL do macOS', as
     assert.match(environment, /^CBM_HOST_BIN=.*\/data\/bin\/codebase-memory-mcp$/m);
     assert.match(environment, /^OLLAMA_RUNTIME=host$/m);
     assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/host\.docker\.internal:11434$/m);
-    assert.match(environment, /^COMPOSE_PROFILES=$/m);
+    assert.match(environment, /^COMPOSE_PROFILES=monitoring$/m);
     assert.match(environment, /^OLLAMA_GPU_MODE=metal$/m);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -437,6 +509,58 @@ test('instalador cria e protege somente o token interno do worker', async () => 
     if (process.platform !== 'win32') {
       assert.equal((await stat(token)).mode & 0o777, 0o600);
     }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('instalador protege a credencial do Grafana e reutiliza o acesso administrativo', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-monitoring-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      create_local_structure
+      ADMIN_USERNAME=admin
+      ADMIN_EMAIL=admin@example.com
+      ADMIN_PASSWORD=senha-monitoramento
+      OPENWEBUI_DESIRED_PASSWORD=senha-monitoramento
+      create_proxy_credentials
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+
+    const monitoringEnv = path.join(temporaryRoot, 'data/secrets/monitoring.env');
+    assert.equal(
+      await readFile(monitoringEnv, 'utf8'),
+      'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=senha-monitoramento\n'
+    );
+    if (process.platform !== 'win32') assert.equal((await stat(monitoringEnv)).mode & 0o777, 0o600);
+    assert.equal(
+      await readFile(path.join(temporaryRoot, 'data/secrets/admin.env'), 'utf8'),
+      'ADMIN_AUTH_USERNAME=admin@example.com\nADMIN_AUTH_PASSWORD=senha-monitoramento\n'
+    );
+    const firstJwtSecret = await readFile(path.join(temporaryRoot, 'data/secrets/admin-jwt-secret'), 'utf8');
+    assert.match(firstJwtSecret, /^[a-f0-9]{64}\n$/);
+    if (process.platform !== 'win32') {
+      assert.equal((await stat(path.join(temporaryRoot, 'data/secrets/admin.env'))).mode & 0o777, 0o600);
+      assert.equal((await stat(path.join(temporaryRoot, 'data/secrets/admin-jwt-secret'))).mode & 0o777, 0o600);
+    }
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      ADMIN_USERNAME=outro-admin
+      ADMIN_EMAIL=outro@example.com
+      ADMIN_PASSWORD=senha-nova
+      OPENWEBUI_DESIRED_PASSWORD=senha-nova
+      create_proxy_credentials
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+    assert.equal(
+      await readFile(monitoringEnv, 'utf8'),
+      'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=senha-monitoramento\n'
+    );
+    assert.notEqual(await readFile(path.join(temporaryRoot, 'data/secrets/admin-jwt-secret'), 'utf8'), firstJwtSecret);
+    assert.equal(
+      await readFile(path.join(temporaryRoot, 'data/secrets/admin.env'), 'utf8'),
+      'ADMIN_AUTH_USERNAME=outro@example.com\nADMIN_AUTH_PASSWORD=senha-nova\n'
+    );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -498,7 +622,7 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
   try {
     await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
     await mkdir(path.join(temporaryRoot, 'data/secrets'), { recursive: true });
-    await writeFile(path.join(temporaryRoot, '.env'), `OPENWEBUI_PORT=${server.address().port}\n`);
+    await writeFile(path.join(temporaryRoot, '.env'), `UI_PORT=${server.address().port}\n`);
     await writeFile(
       path.join(temporaryRoot, 'data/secrets/openwebui.env'),
       'CUSTOM_OPENWEBUI_SETTING=preservar\nWEBUI_ADMIN_EMAIL=joao@exemplo.com\nWEBUI_ADMIN_PASSWORD=senha-antiga\nWEBUI_ADMIN_NAME=joao@exemplo.com\nWEBUI_SECRET_KEY=segredo-preservado\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\n'

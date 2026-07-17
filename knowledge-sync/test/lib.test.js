@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fileChecksum, folderRoot, isTargetDue, legacyIntervalToCron, migrateTargetSchedule, nextRunAt, normalizeTargetInput, sanitizeDriveName } from '../src/lib.js';
+import { changesAffectTarget, fileChecksum, folderRoot, fullReconciliationDue, isTargetDue, legacyIntervalToCron, migrateTargetSchedule, nextRunAt, normalizeTargetInput, sanitizeDriveName } from '../src/lib.js';
 
 test('normaliza um vínculo entre pasta e Knowledge Base', () => {
   assert.deepEqual(normalizeTargetInput({
@@ -54,4 +54,21 @@ test('migra intervalo legado preservando os casos comuns', () => {
   const migration = migrateTargetSchedule({ intervalMinutes: 60 }, 'America/Maceio');
   assert.deepEqual(migration.target, { cron: '30 * * * *', timezone: 'America/Maceio' });
   assert.equal(migration.changed, true);
+});
+
+test('identifica alterações relacionadas aos arquivos e diretórios conhecidos', () => {
+  const target = {
+    folders: [{ id: 'root' }],
+    scannedFolderIds: ['root', 'nested'],
+    files: { 'root:file-a': { driveFileId: 'file-a' } }
+  };
+  assert.equal(changesAffectTarget(target, [{ fileId: 'file-a', removed: true }]), true);
+  assert.equal(changesAffectTarget(target, [{ fileId: 'new', file: { id: 'new', parents: ['nested'] } }]), true);
+  assert.equal(changesAffectTarget(target, [{ fileId: 'other', file: { id: 'other', parents: ['unrelated'] } }]), false);
+});
+
+test('agenda reconciliação completa por idade', () => {
+  assert.equal(fullReconciliationDue({}, new Date('2026-01-08T00:00:00Z')), true);
+  assert.equal(fullReconciliationDue({ lastFullScanAt: '2026-01-07T12:00:00Z' }, new Date('2026-01-08T00:00:00Z'), 24), false);
+  assert.equal(fullReconciliationDue({ lastFullScanAt: '2026-01-06T00:00:00Z' }, new Date('2026-01-08T00:00:00Z'), 24), true);
 });

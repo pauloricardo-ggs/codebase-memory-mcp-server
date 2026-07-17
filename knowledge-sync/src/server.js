@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createServiceAccountAssertion, fileChecksum, folderRoot, GOOGLE_FOLDER_MIME, isTargetDue, MANAGED_ROOT, migrateTargetSchedule, nextRunAt, normalizeTargetInput, publicTarget, sanitizeDriveName, scheduledSlot } from './lib.js';
+import { changesAffectTarget, createServiceAccountAssertion, fileChecksum, folderRoot, fullReconciliationDue, GOOGLE_FOLDER_MIME, isTargetDue, MANAGED_ROOT, migrateTargetSchedule, nextRunAt, normalizeTargetInput, publicTarget, sanitizeDriveName, scheduledSlot } from './lib.js';
+import { gauge, increment, log, metricsText, observe, timed } from './observability.js';
 
 const PORT = Number(process.env.PORT || 3002);
 const DATA_DIR = process.env.SYNC_DATA_DIR || '/data';
@@ -14,6 +15,8 @@ const OPENWEBUI_EMAIL = process.env.WEBUI_ADMIN_EMAIL || '';
 const OPENWEBUI_PASSWORD = process.env.WEBUI_ADMIN_PASSWORD || '';
 const DEFAULT_SYNC_TIMEZONE = process.env.KNOWLEDGE_SYNC_TIMEZONE || 'America/Maceio';
 const HISTORY_LIMIT = 200;
+const FULL_RECONCILIATION_HOURS = Math.max(1, Number.parseInt(process.env.KNOWLEDGE_SYNC_FULL_RECONCILIATION_HOURS || '168', 10) || 168);
+const HTTP_RETRY_ATTEMPTS = Math.max(1, Math.min(6, Number.parseInt(process.env.KNOWLEDGE_SYNC_HTTP_RETRY_ATTEMPTS || '3', 10) || 3));
 
 await mkdir(DATA_DIR, { recursive: true });
 const apiToken = (await readFile(API_TOKEN_FILE, 'utf8')).trim();
@@ -92,13 +95,23 @@ function persist() {
   return persistence;
 }
 
-let scheduleMigrationNeeded = state.version < 2;
+let scheduleMigrationNeeded = state.version < 3;
 state.targets = state.targets.map(target => {
   const migration = migrateTargetSchedule(target, DEFAULT_SYNC_TIMEZONE);
   scheduleMigrationNeeded ||= migration.changed;
-  return migration.target;
+  const migrated = migration.target;
+  migrated.files ||= {};
+  migrated.directories ||= {};
+  migrated.scannedFolderIds ||= (migrated.folders || []).map(folder => folder.id);
+  for (const file of Object.values(migrated.files)) {
+    file.status ||= 'indexed';
+    file.lastSuccessAt ||= migrated.lastRunAt || null;
+    file.lastAttemptAt ||= file.lastSuccessAt;
+    file.error ||= null;
+  }
+  return migrated;
 });
-state.version = 2;
+state.version = 3;
 if (scheduleMigrationNeeded) await persist();
 
 function isBusy(knowledgeBaseId) {
@@ -108,6 +121,32 @@ function isBusy(knowledgeBaseId) {
 function json(response, status, payload) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(payload));
+}
+
+function textResponse(response, status, payload, contentType = 'text/plain; charset=utf-8') {
+  response.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store' });
+  response.end(payload);
+}
+
+const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+async function fetchWithRetry(url, options, provider) {
+  let response;
+  let lastError;
+  for (let attempt = 1; attempt <= HTTP_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      response = await fetch(url, options);
+      increment('knowledge_sync_http_requests_total', { provider, status: response.status });
+      if (response.status !== 429 && response.status < 500) return response;
+      lastError = new Error(`${provider} respondeu HTTP ${response.status}.`);
+    } catch (error) {
+      lastError = error;
+      increment('knowledge_sync_http_requests_total', { provider, status: 'network_error' });
+    }
+    if (attempt < HTTP_RETRY_ATTEMPTS) await wait(250 * (2 ** (attempt - 1)));
+  }
+  if (response) return response;
+  throw lastError;
 }
 
 async function requestBody(request) {
@@ -128,12 +167,12 @@ async function getGoogleToken() {
     grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
     assertion
   });
-  const response = await fetch(googleCredentials.token_uri || 'https://oauth2.googleapis.com/token', {
+  const response = await fetchWithRetry(googleCredentials.token_uri || 'https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: form,
     signal: AbortSignal.timeout(30_000)
-  });
+  }, 'google_oauth');
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.access_token) throw new Error(`Falha ao autenticar no Google Drive: ${payload.error_description || payload.error || response.status}.`);
   googleToken = { value: payload.access_token, expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000 };
@@ -142,11 +181,11 @@ async function getGoogleToken() {
 
 async function google(pathname, options = {}, retry = true) {
   const token = await getGoogleToken();
-  const response = await fetch(`${GOOGLE_API_URL}${pathname}`, {
+  const response = await fetchWithRetry(`${GOOGLE_API_URL}${pathname}`, {
     ...options,
     headers: { authorization: `Bearer ${token}`, ...options.headers },
     signal: options.signal || AbortSignal.timeout(60_000)
-  });
+  }, 'google_drive');
   if (response.status === 401 && retry) {
     googleToken = null;
     return google(pathname, options, false);
@@ -228,25 +267,59 @@ function downloadableFile(file, relativePath, rootFolder) {
     filename,
     mimeType: file.mimeType,
     exportMime: googleExport?.mime || null,
-    checksum: fileChecksum(file)
+    checksum: fileChecksum(file),
+    modifiedTime: file.modifiedTime || null,
+    size: file.size || null
   };
 }
 
-async function scanFolder(rootFolder, currentFolderId = rootFolder.id, relativePath = '', seen = new Set()) {
+async function scanFolder(rootFolder, currentFolderId = rootFolder.id, relativePath = '', seen = new Set(), scannedFolderIds = new Set()) {
   if (seen.has(currentFolderId)) return [];
   seen.add(currentFolderId);
+  scannedFolderIds.add(currentFolderId);
   const children = await listDriveFiles(`'${currentFolderId.replaceAll("'", "\\'")}' in parents and trashed = false`);
   const entries = [];
   for (const child of children) {
     if (child.mimeType === GOOGLE_FOLDER_MIME) {
       const childPath = [relativePath, sanitizeDriveName(child.name, child.id)].filter(Boolean).join('/');
-      entries.push(...await scanFolder(rootFolder, child.id, childPath, seen));
+      entries.push(...await scanFolder(rootFolder, child.id, childPath, seen, scannedFolderIds));
       continue;
     }
     const entry = downloadableFile(child, relativePath, rootFolder);
     if (entry) entries.push(entry);
   }
   return entries;
+}
+
+async function getStartPageToken() {
+  const params = new URLSearchParams({ supportsAllDrives: 'true' });
+  const response = await google(`/drive/v3/changes/startPageToken?${params}`);
+  const payload = await response.json();
+  if (!payload.startPageToken) throw new Error('Google Drive não retornou o token inicial de alterações.');
+  return payload.startPageToken;
+}
+
+async function listDriveChanges(pageToken) {
+  const changes = [];
+  let token = pageToken;
+  let newStartPageToken = null;
+  do {
+    const params = new URLSearchParams({
+      pageToken: token,
+      pageSize: '1000',
+      spaces: 'drive',
+      includeRemoved: 'true',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+      fields: 'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed))'
+    });
+    const response = await google(`/drive/v3/changes?${params}`);
+    const payload = await response.json();
+    changes.push(...(payload.changes || []));
+    token = payload.nextPageToken || '';
+    newStartPageToken = payload.newStartPageToken || newStartPageToken;
+  } while (token);
+  return { changes, newStartPageToken: newStartPageToken || pageToken };
 }
 
 async function downloadDriveFile(entry) {
@@ -258,12 +331,12 @@ async function downloadDriveFile(entry) {
 }
 
 async function signInOpenWebui() {
-  const response = await fetch(`${OPENWEBUI_URL}/api/v1/auths/signin`, {
+  const response = await fetchWithRetry(`${OPENWEBUI_URL}/api/v1/auths/signin`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: OPENWEBUI_EMAIL, password: OPENWEBUI_PASSWORD }),
     signal: AbortSignal.timeout(30_000)
-  });
+  }, 'openwebui');
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.token) throw new Error(`Falha ao autenticar no Open WebUI: ${payload.detail || response.status}.`);
   openwebuiToken = payload.token;
@@ -272,11 +345,11 @@ async function signInOpenWebui() {
 
 async function openwebui(pathname, options = {}, retry = true) {
   const token = openwebuiToken || await signInOpenWebui();
-  const response = await fetch(`${OPENWEBUI_URL}/api/v1${pathname}`, {
+  const response = await fetchWithRetry(`${OPENWEBUI_URL}/api/v1${pathname}`, {
     ...options,
     headers: { authorization: `Bearer ${token}`, ...options.headers },
     signal: options.signal || AbortSignal.timeout(180_000)
-  });
+  }, 'openwebui');
   if (response.status === 401 && retry) {
     openwebuiToken = null;
     return openwebui(pathname, options, false);
@@ -290,10 +363,10 @@ async function openwebui(pathname, options = {}, retry = true) {
 
 async function getOpenWebuiPublicConfig(retry = true) {
   const token = openwebuiToken || await signInOpenWebui();
-  const response = await fetch(`${OPENWEBUI_URL}/api/config`, {
+  const response = await fetchWithRetry(`${OPENWEBUI_URL}/api/config`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(30_000)
-  });
+  }, 'openwebui');
   if (response.status === 401 && retry) {
     openwebuiToken = null;
     return getOpenWebuiPublicConfig(false);
@@ -390,7 +463,13 @@ async function uploadFile(target, entry, content, directoryId) {
   form.append('metadata', JSON.stringify({
     knowledge_id: target.knowledgeBaseId,
     file_hash: entry.checksum,
-    directory_id: directoryId
+    directory_id: directoryId,
+    source: 'google-drive',
+    drive_file_id: entry.driveFileId,
+    drive_folder_id: entry.folderId,
+    managed_path: entry.managedPath,
+    modified_time: entry.modifiedTime,
+    ingested_at: new Date().toISOString()
   }));
   const response = await openwebui('/files/', { method: 'POST', body: form });
   const payload = await response.json();
@@ -417,21 +496,131 @@ function recordHistory(target, run) {
   state.history = state.history.slice(0, HISTORY_LIMIT);
 }
 
+async function processManifestEntry(target, entry, counters, operationId, force = false) {
+  const previous = target.files[entry.sourceKey];
+  if (!force && previous?.fileId && previous.status !== 'failed' && previous.checksum === entry.checksum && previous.managedPath === entry.managedPath && previous.filename === entry.filename) {
+    previous.modifiedTime = entry.modifiedTime;
+    previous.size = entry.size;
+    counters.unchanged += 1;
+    return;
+  }
+
+  const attemptedAt = new Date().toISOString();
+  const started = performance.now();
+  try {
+    const content = await timed('drive_download_duration_seconds', {}, () => downloadDriveFile(entry));
+    const directoryId = await ensureDirectory(target, entry.managedPath || MANAGED_ROOT);
+    const newFileId = await timed('openwebui_ingestion_duration_seconds', { status: 'attempt' }, () => uploadFile(target, entry, content, directoryId));
+    target.files[entry.sourceKey] = {
+      fileId: newFileId,
+      driveFileId: entry.driveFileId,
+      folderId: entry.folderId,
+      checksum: entry.checksum,
+      managedPath: entry.managedPath,
+      filename: entry.filename,
+      mimeType: entry.mimeType,
+      exportMime: entry.exportMime,
+      modifiedTime: entry.modifiedTime,
+      size: entry.size,
+      status: 'indexed',
+      error: null,
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt: new Date().toISOString(),
+      durationMs: Math.round(performance.now() - started)
+    };
+    await persist();
+    if (previous?.fileId && previous.fileId !== newFileId) {
+      try {
+        await cleanupFiles(target.knowledgeBaseId, [previous.fileId]);
+        target.files[entry.sourceKey].cleanupError = null;
+      } catch (error) {
+        target.files[entry.sourceKey].cleanupError = error.message;
+        increment('drive_sync_files_total', { operation: 'cleanup', status: 'failed' });
+        log('warn', 'previous_file_cleanup_failed', { operationId, knowledgeBaseId: target.knowledgeBaseId, sourceKey: entry.sourceKey, error: error.message });
+      }
+      counters.modified += 1;
+      increment('drive_sync_files_total', { operation: 'modified', status: 'completed' });
+    } else {
+      counters.added += 1;
+      increment('drive_sync_files_total', { operation: 'added', status: 'completed' });
+    }
+    await persist();
+    log('info', 'file_processed', { operationId, knowledgeBaseId: target.knowledgeBaseId, sourceKey: entry.sourceKey, durationMs: Math.round(performance.now() - started) });
+  } catch (error) {
+    target.files[entry.sourceKey] = {
+      ...(previous || {}),
+      driveFileId: entry.driveFileId,
+      folderId: entry.folderId,
+      checksum: entry.checksum,
+      managedPath: entry.managedPath,
+      filename: entry.filename,
+      mimeType: entry.mimeType,
+      exportMime: entry.exportMime,
+      modifiedTime: entry.modifiedTime,
+      size: entry.size,
+      status: 'failed',
+      error: error.message,
+      lastAttemptAt: attemptedAt,
+      durationMs: Math.round(performance.now() - started)
+    };
+    counters.failed += 1;
+    increment('drive_sync_files_total', { operation: previous?.fileId ? 'modified' : 'added', status: 'failed' });
+    log('error', 'file_processing_failed', { operationId, knowledgeBaseId: target.knowledgeBaseId, sourceKey: entry.sourceKey, error: error.message });
+    await persist();
+  }
+}
+
+function completeRun(target, trigger, status, startedAt, counters, extra = {}) {
+  const finishedAt = new Date().toISOString();
+  target.lastRunAt = finishedAt;
+  target.lastRunStatus = status;
+  target.lastRunSummary = counters;
+  target.lastError = status === 'completed' ? null : `${counters.failed} arquivo(s) falharam.`;
+  recordHistory(target, { trigger, status, startedAt, finishedAt, durationMs: Date.parse(finishedAt) - Date.parse(startedAt), ...counters, ...extra });
+  return finishedAt;
+}
+
 async function executeTarget(target, trigger) {
   const startedAt = new Date().toISOString();
-  const counters = { added: 0, modified: 0, deleted: 0, unchanged: 0 };
+  const operationId = crypto.randomUUID();
+  const counters = { added: 0, modified: 0, deleted: 0, unchanged: 0, failed: 0 };
+  gauge('drive_sync_queue_size', queued.size);
+  log('info', 'sync_started', { operationId, knowledgeBaseId: target.knowledgeBaseId, trigger });
   try {
+    const hasFailedFiles = Object.values(target.files || {}).some(file => file.status === 'failed');
+    if (target.changePageToken && !hasFailedFiles && !fullReconciliationDue(target, new Date(), FULL_RECONCILIATION_HOURS)) {
+      try {
+        const changeSet = await timed('drive_changes_scan_duration_seconds', {}, () => listDriveChanges(target.changePageToken));
+        if (!changesAffectTarget(target, changeSet.changes)) {
+          target.changePageToken = changeSet.newStartPageToken;
+          completeRun(target, trigger, 'completed', startedAt, counters, { mode: 'incremental', inspectedChanges: changeSet.changes.length });
+          await persist();
+          increment('drive_sync_runs_total', { status: 'completed', mode: 'incremental' });
+          observe('drive_sync_duration_seconds', (Date.now() - Date.parse(startedAt)) / 1000, { status: 'completed', mode: 'incremental' });
+          log('info', 'sync_completed', { operationId, knowledgeBaseId: target.knowledgeBaseId, mode: 'incremental', inspectedChanges: changeSet.changes.length });
+          return counters;
+        }
+      } catch (error) {
+        log('warn', 'changes_fast_path_failed', { operationId, knowledgeBaseId: target.knowledgeBaseId, error: error.message });
+      }
+    }
+
+    let reconciliationPageToken = null;
+    try { reconciliationPageToken = await getStartPageToken(); }
+    catch (error) { log('warn', 'changes_token_unavailable', { operationId, knowledgeBaseId: target.knowledgeBaseId, error: error.message }); }
+
     const bases = await listKnowledgeBases();
     const knowledge = bases.find(item => item.id === target.knowledgeBaseId);
     if (!knowledge) throw new Error('Knowledge Base não encontrada ou sem acesso de escrita.');
     target.knowledgeBaseName = knowledge.name;
 
     const manifest = [];
+    const scannedFolderIds = new Set();
     for (const configuredFolder of target.folders) {
       const metadata = await getDriveFile(configuredFolder.id);
       if (metadata.trashed || metadata.mimeType !== GOOGLE_FOLDER_MIME) throw new Error(`A pasta ${configuredFolder.name} não está disponível.`);
       configuredFolder.name = sanitizeDriveName(metadata.name, configuredFolder.name);
-      const scanned = await scanFolder(configuredFolder);
+      const scanned = await scanFolder(configuredFolder, configuredFolder.id, '', new Set(), scannedFolderIds);
       const basePath = folderRoot(configuredFolder);
       manifest.push(...scanned.map(entry => ({ ...entry, managedPath: [basePath, entry.path].filter(Boolean).join('/') })));
     }
@@ -442,52 +631,38 @@ async function executeTarget(target, trigger) {
 
     const currentKeys = new Set(manifest.map(entry => entry.sourceKey));
     for (const entry of manifest) {
-      const previous = target.files[entry.sourceKey];
-      if (previous && previous.checksum === entry.checksum && previous.managedPath === entry.managedPath && previous.filename === entry.filename) {
-        counters.unchanged += 1;
-        continue;
-      }
-      const content = await downloadDriveFile(entry);
-      const directoryId = await ensureDirectory(target, entry.managedPath || MANAGED_ROOT);
-      const newFileId = await uploadFile(target, entry, content, directoryId);
-      target.files[entry.sourceKey] = {
-        fileId: newFileId,
-        driveFileId: entry.driveFileId,
-        folderId: entry.folderId,
-        checksum: entry.checksum,
-        managedPath: entry.managedPath,
-        filename: entry.filename
-      };
-      await persist();
-      if (previous?.fileId) {
-        await cleanupFiles(target.knowledgeBaseId, [previous.fileId]);
-        counters.modified += 1;
-      } else counters.added += 1;
+      await processManifestEntry(target, entry, counters, operationId);
     }
 
     const removed = Object.entries(target.files).filter(([sourceKey]) => !currentKeys.has(sourceKey));
     for (const [sourceKey, previous] of removed) {
-      await cleanupFiles(target.knowledgeBaseId, [previous.fileId]);
+      if (previous.fileId) await cleanupFiles(target.knowledgeBaseId, [previous.fileId]);
       delete target.files[sourceKey];
       counters.deleted += 1;
+      increment('drive_sync_files_total', { operation: 'deleted', status: 'completed' });
       await persist();
     }
 
-    const finishedAt = new Date().toISOString();
-    target.lastRunAt = finishedAt;
-    target.lastRunStatus = 'completed';
-    target.lastRunSummary = counters;
-    target.lastError = null;
-    recordHistory(target, { trigger, status: 'completed', startedAt, finishedAt, ...counters });
+    target.scannedFolderIds = [...scannedFolderIds];
+    target.lastFullScanAt = new Date().toISOString();
+    if (reconciliationPageToken) target.changePageToken = reconciliationPageToken;
+    const status = counters.failed ? 'partial' : 'completed';
+    completeRun(target, trigger, status, startedAt, counters, { mode: 'full' });
     await persist();
+    increment('drive_sync_runs_total', { status, mode: 'full' });
+    observe('drive_sync_duration_seconds', (Date.now() - Date.parse(startedAt)) / 1000, { status, mode: 'full' });
+    log('info', 'sync_completed', { operationId, knowledgeBaseId: target.knowledgeBaseId, status, ...counters });
     return counters;
   } catch (error) {
     const finishedAt = new Date().toISOString();
     target.lastRunAt = finishedAt;
     target.lastRunStatus = 'failed';
     target.lastError = error.message;
-    recordHistory(target, { trigger, status: 'failed', startedAt, finishedAt, error: error.message, ...counters });
+    recordHistory(target, { trigger, status: 'failed', startedAt, finishedAt, durationMs: Date.parse(finishedAt) - Date.parse(startedAt), error: error.message, ...counters });
     await persist();
+    increment('drive_sync_runs_total', { status: 'failed', mode: 'full' });
+    observe('drive_sync_duration_seconds', (Date.now() - Date.parse(startedAt)) / 1000, { status: 'failed', mode: 'full' });
+    log('error', 'sync_failed', { operationId, knowledgeBaseId: target.knowledgeBaseId, error: error.message });
     throw error;
   }
 }
@@ -508,7 +683,70 @@ function runTarget(knowledgeBaseId, trigger = 'manual', scheduledFor = null) {
       }
       await executeTarget(target, trigger);
     } catch (error) {
-      console.error(`Sincronização ${knowledgeBaseId} falhou:`, error.message);
+      log('error', 'queued_sync_failed', { knowledgeBaseId, error: error.message });
+    } finally {
+      running.delete(knowledgeBaseId);
+    }
+  };
+  executionQueue = executionQueue.then(operation, operation);
+  gauge('drive_sync_queue_size', queued.size);
+}
+
+function publicManagedFile(sourceKey, file) {
+  return {
+    sourceKey,
+    driveFileId: file.driveFileId,
+    folderId: file.folderId,
+    filename: file.filename,
+    managedPath: file.managedPath,
+    mimeType: file.mimeType || null,
+    modifiedTime: file.modifiedTime || null,
+    size: file.size || null,
+    status: file.status || 'indexed',
+    error: file.error || file.cleanupError || null,
+    lastAttemptAt: file.lastAttemptAt || null,
+    lastSuccessAt: file.lastSuccessAt || null,
+    durationMs: file.durationMs || null
+  };
+}
+
+function runFileReprocess(knowledgeBaseId, sourceKey) {
+  const target = state.targets.find(item => item.knowledgeBaseId === knowledgeBaseId);
+  if (!target) throw new Error('Vínculo não encontrado.');
+  if (isBusy(knowledgeBaseId)) throw new Error('Esta Knowledge Base já está na fila de sincronização.');
+  const stored = target.files[sourceKey];
+  if (!stored) throw new Error('Arquivo gerenciado não encontrado.');
+  queued.add(knowledgeBaseId);
+  gauge('drive_sync_queue_size', queued.size);
+  const operation = async () => {
+    queued.delete(knowledgeBaseId);
+    running.add(knowledgeBaseId);
+    gauge('drive_sync_queue_size', queued.size);
+    const operationId = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    const counters = { added: 0, modified: 0, deleted: 0, unchanged: 0, failed: 0 };
+    try {
+      const metadata = await getDriveFile(stored.driveFileId);
+      if (metadata.trashed || metadata.mimeType === GOOGLE_FOLDER_MIME) throw new Error('O arquivo não está mais disponível no Google Drive.');
+      const configuredFolder = target.folders.find(folder => folder.id === stored.folderId) || { id: stored.folderId, name: stored.folderId };
+      const entry = downloadableFile(metadata, '', configuredFolder);
+      if (!entry) throw new Error('Este tipo de arquivo do Google Drive não pode ser exportado.');
+      entry.sourceKey = sourceKey;
+      entry.managedPath = stored.managedPath;
+      await processManifestEntry(target, entry, counters, operationId, true);
+      const status = counters.failed ? 'partial' : 'completed';
+      completeRun(target, 'file-reprocess', status, startedAt, counters, { mode: 'single-file', sourceKey });
+      await persist();
+      increment('drive_sync_runs_total', { status, mode: 'single-file' });
+    } catch (error) {
+      const file = target.files[sourceKey];
+      if (file) Object.assign(file, { status: 'failed', error: error.message, lastAttemptAt: new Date().toISOString() });
+      target.lastRunAt = new Date().toISOString();
+      target.lastRunStatus = 'failed';
+      target.lastError = error.message;
+      recordHistory(target, { trigger: 'file-reprocess', status: 'failed', startedAt, finishedAt: target.lastRunAt, sourceKey, error: error.message, ...counters });
+      await persist();
+      log('error', 'file_reprocess_failed', { operationId, knowledgeBaseId, sourceKey, error: error.message });
     } finally {
       running.delete(knowledgeBaseId);
     }
@@ -522,7 +760,17 @@ async function authorize(request) {
 }
 
 async function route(request, response, url) {
-  if (request.method === 'GET' && url.pathname === '/health') return json(response, 200, { status: 'ok' });
+  if (request.method === 'GET' && ['/health', '/health/live'].includes(url.pathname)) return json(response, 200, { status: 'ok' });
+  if (request.method === 'GET' && url.pathname === '/health/ready') {
+    try {
+      const upstream = await fetch(`${OPENWEBUI_URL}/health`, { signal: AbortSignal.timeout(3_000) });
+      if (!upstream.ok) throw new Error(`Open WebUI HTTP ${upstream.status}`);
+      return json(response, 200, { status: 'ready' });
+    } catch (error) {
+      return json(response, 503, { status: 'not_ready', dependency: 'openwebui', error: error.message });
+    }
+  }
+  if (request.method === 'GET' && url.pathname === '/metrics') return textResponse(response, 200, metricsText(), 'text/plain; version=0.0.4; charset=utf-8');
   if (!await authorize(request)) return json(response, 401, { error: 'Não autorizado.' });
 
   if (request.method === 'GET' && url.pathname === '/api/status') {
@@ -597,6 +845,19 @@ async function route(request, response, url) {
     return json(response, 200, { paused: state.targets.length });
   }
 
+  const filesMatch = url.pathname.match(/^\/api\/targets\/([A-Za-z0-9_-]+)\/files(?:\/(.+)\/(reprocess|retry))?$/);
+  if (filesMatch && request.method === 'GET' && !filesMatch[2]) {
+    const target = state.targets.find(item => item.knowledgeBaseId === filesMatch[1]);
+    if (!target) throw new Error('Vínculo não encontrado.');
+    const files = Object.entries(target.files || {}).map(([sourceKey, file]) => publicManagedFile(sourceKey, file)).sort((a, b) => a.filename.localeCompare(b.filename, 'pt-BR'));
+    return json(response, 200, { files });
+  }
+  if (filesMatch && request.method === 'POST' && filesMatch[2]) {
+    const sourceKey = decodeURIComponent(filesMatch[2]);
+    runFileReprocess(filesMatch[1], sourceKey);
+    return json(response, 202, { accepted: true, sourceKey });
+  }
+
   const match = url.pathname.match(/^\/api\/targets\/([A-Za-z0-9_-]+)(?:\/(run))?$/);
   if (match && request.method === 'PUT' && !match[2]) {
     if (isBusy(match[1])) throw new Error('Aguarde a sincronização atual terminar antes de alterar o vínculo.');
@@ -649,21 +910,21 @@ async function checkSchedules() {
   for (const target of state.targets) {
     if (isTargetDue(target) && !isBusy(target.knowledgeBaseId)) {
       try { runTarget(target.knowledgeBaseId, 'schedule', scheduledSlot(target)); }
-      catch (error) { console.error(`Não foi possível agendar ${target.knowledgeBaseId}:`, error.message); }
+      catch (error) { log('error', 'schedule_enqueue_failed', { knowledgeBaseId: target.knowledgeBaseId, error: error.message }); }
     }
   }
 }
 
 await checkSchedules();
-setInterval(() => checkSchedules().catch(console.error), 30_000).unref();
+setInterval(() => checkSchedules().catch(error => log('error', 'schedule_check_failed', { error: error.message })), 30_000).unref();
 
 http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
   try { await route(request, response, url); }
   catch (error) {
-    console.error(error);
+    log('error', 'request_failed', { method: request.method, path: url.pathname, error: error.message });
     json(response, 400, { error: error.message || 'Erro inesperado.' });
   }
 }).listen(PORT, '0.0.0.0', () => {
-  console.log(`Knowledge Sync em http://0.0.0.0:${PORT}; próxima verificação ${state.targets.map(nextRunAt).filter(Boolean).sort()[0] || 'sem vínculos'}`);
+  log('info', 'server_started', { port: PORT, nextRunAt: state.targets.map(nextRunAt).filter(Boolean).sort()[0] || null });
 });

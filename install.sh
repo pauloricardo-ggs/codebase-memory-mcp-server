@@ -7,7 +7,6 @@ BASE_DIR="$SCRIPT_DIR"
 REPOSITORIES_DIR="${BASE_DIR}/repositories"
 CACHE_DIR="${BASE_DIR}/cache"
 DATA_DIR="${BASE_DIR}/data"
-PROXY_SECRETS_DIR="${DATA_DIR}/secrets/proxy"
 AGENTGATEWAY_DATA_DIR="${DATA_DIR}/agentgateway"
 ENV_FILE="${BASE_DIR}/.env"
 GPU_COMPOSE_FILE="${BASE_DIR}/compose.gpu.yaml"
@@ -21,6 +20,7 @@ CURRENT_USER="$(id -un)"
 SUDO_KEEPALIVE_PID=''
 ADMIN_PASSWORD=''
 ADMIN_EMAIL=''
+PUBLIC_BASE_URL=''
 OPENWEBUI_ADMIN_NAME='Admin'
 OPENWEBUI_PREVIOUS_EMAIL=''
 OPENWEBUI_PREVIOUS_NAME=''
@@ -641,18 +641,13 @@ read_existing_environment_value() {
 }
 
 ask_proxy_access() {
-  local suggested_email input password_confirmation existing_username=''
-
-  if [[ -f "${PROXY_SECRETS_DIR}/.htpasswd" ]]; then
-    existing_username="$(cut -d: -f1 "${PROXY_SECRETS_DIR}/.htpasswd" | head -n 1)"
-  fi
+  local suggested_email input password_confirmation
   if [[ -f "${DATA_DIR}/secrets/openwebui.env" ]]; then
     OPENWEBUI_PREVIOUS_EMAIL="$(sed -n 's/^WEBUI_ADMIN_EMAIL=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
     OPENWEBUI_PREVIOUS_NAME="$(sed -n 's/^WEBUI_ADMIN_NAME=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
     OPENWEBUI_PREVIOUS_PASSWORD="$(sed -n 's/^WEBUI_ADMIN_PASSWORD=//p' "${DATA_DIR}/secrets/openwebui.env" | tail -n 1)"
   fi
   suggested_email="${OPENWEBUI_PREVIOUS_EMAIL:-$(read_existing_environment_value ADMIN_EMAIL)}"
-  suggested_email="${suggested_email:-$existing_username}"
   [[ "$suggested_email" == *@*.* ]] || suggested_email='joao@exemplo.com'
 
   printf "\n${COLOR_BOLD}Acesso ao painel${COLOR_RESET}\n"
@@ -667,7 +662,7 @@ ask_proxy_access() {
   ADMIN_USERNAME="$ADMIN_EMAIL"
 
   while true; do
-    if [[ -f "${PROXY_SECRETS_DIR}/.htpasswd" && -s "${DATA_DIR}/secrets/openwebui.env" && "$ADMIN_EMAIL" == "$OPENWEBUI_PREVIOUS_EMAIL" && "$ADMIN_USERNAME" == "$existing_username" ]]; then
+    if [[ -s "${DATA_DIR}/secrets/openwebui.env" && "$ADMIN_EMAIL" == "$OPENWEBUI_PREVIOUS_EMAIL" ]]; then
       read -r -s -p 'Nova senha (deixe vazia para manter a atual): ' ADMIN_PASSWORD
       printf '\n'
       [[ -z "$ADMIN_PASSWORD" ]] && break
@@ -698,10 +693,44 @@ ask_proxy_access() {
   success "Credencial de acesso definida para ${ADMIN_EMAIL}"
 }
 
+ask_public_base_url() {
+  local suggested input authority port port_number legacy_grafana_url
+  suggested="$(read_existing_environment_value PUBLIC_BASE_URL)"
+  if [[ -z "$suggested" ]]; then
+    legacy_grafana_url="$(read_existing_environment_value GRAFANA_ROOT_URL)"
+    [[ "$legacy_grafana_url" == */grafana/ ]] && suggested="${legacy_grafana_url%/grafana/}"
+  fi
+  suggested="${suggested%/}"
+  suggested="${suggested:-http://localhost:8787}"
+
+  printf "\n${COLOR_BOLD}URL pública${COLOR_RESET}\n"
+  printf 'Use a origem externa sem caminho; /admin, /grafana e /mcp serão derivados automaticamente.\n'
+  while true; do
+    read -r -p "URL base [${suggested}]: " input
+    input="${input:-$suggested}"
+    input="${input%/}"
+    if [[ "$input" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]]; then
+      authority="${input#*://}"
+      if [[ "$authority" == *:* ]]; then
+        port="${authority##*:}"
+        port_number=$((10#$port))
+        if (( port_number < 1 || port_number > 65535 )); then
+          warn 'A porta da URL precisa estar entre 1 e 65535.'
+          continue
+        fi
+      fi
+      PUBLIC_BASE_URL="$input"
+      break
+    fi
+    warn 'Informe uma URL HTTP ou HTTPS sem caminho, consulta ou fragmento.'
+  done
+  success "URL pública configurada como ${PUBLIC_BASE_URL}"
+}
+
 create_local_structure() {
-  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/bin" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
+  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/bin" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
   chmod 755 "$REPOSITORIES_DIR"
-  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/bin" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
+  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/bin" "${DATA_DIR}/secrets" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
   success "Estrutura local criada em ${BASE_DIR}"
 }
 
@@ -767,17 +796,9 @@ configure_google_drive_sync() {
 }
 
 create_proxy_credentials() {
-  local password_hash
-  local htpasswd_file="${PROXY_SECRETS_DIR}/.htpasswd"
-
-  if [[ -n "$ADMIN_PASSWORD" ]]; then
-    password_hash="$(printf '%s\n' "$ADMIN_PASSWORD" | openssl passwd -apr1 -stdin)"
-    printf '%s:%s\n' "$ADMIN_USERNAME" "$password_hash" >"${htpasswd_file}.tmp"
-    chmod 600 "${htpasswd_file}.tmp"
-    mv "${htpasswd_file}.tmp" "$htpasswd_file"
-  fi
-
   local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
+  local admin_env="${DATA_DIR}/secrets/admin.env"
+  local admin_jwt_secret="${DATA_DIR}/secrets/admin-jwt-secret"
   local stored_email stored_password stored_name webui_secret
   if [[ ! -s "$openwebui_env" ]]; then
     webui_secret="$(openssl rand -hex 32)"
@@ -791,16 +812,42 @@ create_proxy_credentials() {
       || fail "Configuração administrativa incompleta em ${openwebui_env}."
     write_openwebui_environment "$stored_email" "$stored_password" "$stored_name" "$webui_secret"
   fi
+  local monitoring_env="${DATA_DIR}/secrets/monitoring.env"
+  local monitoring_password
+  if [[ ! -s "$monitoring_env" ]]; then
+    monitoring_password="$(sed -n 's/^WEBUI_ADMIN_PASSWORD=//p' "$openwebui_env" | tail -n 1)"
+    [[ -n "$monitoring_password" ]] || fail "Senha administrativa não encontrada para configurar o Grafana."
+    {
+      printf 'GF_SECURITY_ADMIN_USER=%s\n' "$ADMIN_USERNAME"
+      printf 'GF_SECURITY_ADMIN_PASSWORD=%s\n' "$monitoring_password"
+    } >"${monitoring_env}.tmp"
+    chmod 600 "${monitoring_env}.tmp"
+    mv "${monitoring_env}.tmp" "$monitoring_env"
+  fi
+  grep -q '^GF_SECURITY_ADMIN_USER=.' "$monitoring_env" || fail "Usuário do Grafana ausente em ${monitoring_env}."
+  grep -q '^GF_SECURITY_ADMIN_PASSWORD=.' "$monitoring_env" || fail "Senha do Grafana ausente em ${monitoring_env}."
+  chmod 600 "$monitoring_env"
+
+  {
+    printf 'ADMIN_AUTH_USERNAME=%s\n' "$ADMIN_EMAIL"
+    printf 'ADMIN_AUTH_PASSWORD=%s\n' "$OPENWEBUI_DESIRED_PASSWORD"
+  } >"${admin_env}.tmp"
+  chmod 600 "${admin_env}.tmp"
+  mv "${admin_env}.tmp" "$admin_env"
+  # Uma senha nova invalida imediatamente todas as sessões administrativas.
+  if [[ ! -s "$admin_jwt_secret" || -n "$ADMIN_PASSWORD" ]]; then
+    openssl rand -hex 32 >"${admin_jwt_secret}.tmp"
+    chmod 600 "${admin_jwt_secret}.tmp"
+    mv "${admin_jwt_secret}.tmp" "$admin_jwt_secret"
+  fi
+  chmod 600 "$admin_jwt_secret"
   ADMIN_PASSWORD=''
 
-  [[ -f "$htpasswd_file" ]] || fail "Não foi possível criar a credencial do proxy."
-  chmod 600 "$htpasswd_file"
   rm -f \
-    "${PROXY_SECRETS_DIR}/tls.crt" \
-    "${PROXY_SECRETS_DIR}/tls.key" \
-    "${PROXY_SECRETS_DIR}/tls.crt.tmp" \
-    "${PROXY_SECRETS_DIR}/tls.key.tmp"
-  success "Credencial do proxy configurada"
+    "${DATA_DIR}/secrets/proxy/.htpasswd" \
+    "${DATA_DIR}/secrets/proxy/tls.crt" \
+    "${DATA_DIR}/secrets/proxy/tls.key"
+  success "Credenciais próprias do painel, Open WebUI e Grafana configuradas"
 }
 
 write_openwebui_environment() {
@@ -821,16 +868,20 @@ write_openwebui_environment() {
 }
 
 create_environment_file() {
-  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 agentgateway_ui_port=8788 openwebui_port=3000 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value
+  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 public_base_url="${PUBLIC_BASE_URL:-}" workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value compose_profiles legacy_grafana_url
   if [[ -f "$ENV_FILE" ]]; then
     existing_value="$(sed -n 's/^OLLAMA_VERSION=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[A-Za-z0-9._-]+$ ]] && OLLAMA_VERSION="$existing_value"
     existing_value="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && ui_port="$existing_value"
-    existing_value="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
-    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && agentgateway_ui_port="$existing_value"
-    existing_value="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
-    [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && openwebui_port="$existing_value"
+    if [[ -z "$public_base_url" ]]; then
+      existing_value="$(sed -n 's/^PUBLIC_BASE_URL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ "$existing_value" =~ ^https?://[^/[:space:]?#]+$ ]] && public_base_url="$existing_value"
+    fi
+    if [[ -z "$public_base_url" ]]; then
+      legacy_grafana_url="$(sed -n 's/^GRAFANA_ROOT_URL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ "$legacy_grafana_url" == */grafana/ ]] && public_base_url="${legacy_grafana_url%/grafana/}"
+    fi
     existing_value="$(sed -n 's/^WORKSPACE_TIMEZONE=//p' "$ENV_FILE" | tail -n 1)"
     [[ -n "$existing_value" ]] && workspace_timezone="$existing_value"
     existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
@@ -850,8 +901,12 @@ create_environment_file() {
     existing_value="$(sed -n 's/^RAG_TOP_K_RERANKER=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 100 )) && RAG_TOP_K_RERANKER="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\nDOCLING_VERSION=%s\nDOCLING_CPU_THREADS=%s\nRAG_RERANKING_MODEL=%s\nRAG_RERANKING_BATCH_SIZE=%s\nRAG_TOP_K=%s\nRAG_TOP_K_RERANKER=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$OLLAMA_COMPOSE_PROFILES" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" "$DOCLING_VERSION" "$DOCLING_CPU_THREADS" "$RAG_RERANKING_MODEL" "$RAG_RERANKING_BATCH_SIZE" "$RAG_TOP_K" "$RAG_TOP_K_RERANKER" >"$temporary_file"
+  compose_profiles='monitoring'
+  [[ -z "$OLLAMA_COMPOSE_PROFILES" ]] || compose_profiles="${OLLAMA_COMPOSE_PROFILES},monitoring"
+  public_base_url="${public_base_url%/}"
+  [[ -n "$public_base_url" ]] || public_base_url="http://localhost:${ui_port}"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nPUBLIC_BASE_URL=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\nDOCLING_VERSION=%s\nDOCLING_CPU_THREADS=%s\nRAG_RERANKING_MODEL=%s\nRAG_RERANKING_BATCH_SIZE=%s\nRAG_TOP_K=%s\nRAG_TOP_K_RERANKER=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$public_base_url" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$compose_profiles" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" "$DOCLING_VERSION" "$DOCLING_CPU_THREADS" "$RAG_RERANKING_MODEL" "$RAG_RERANKING_BATCH_SIZE" "$RAG_TOP_K" "$RAG_TOP_K_RERANKER" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -931,14 +986,14 @@ start_admin_panel_command() {
   # O agentgateway-config altera um arquivo bind-mounted sem modificar a
   # definição do serviço. Force a recriação para o AgentGateway reler a porta
   # antes de o agentgateway-ready verificar o listener MCP.
-  if ! docker_compose up -d --build --force-recreate; then
+  if ! docker_compose up -d --build --force-recreate --remove-orphans; then
     docker_compose ps -a
     if [[ "$OLLAMA_RUNTIME" == docker ]]; then
       docker_compose logs --tail=200 \
-        agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui ollama docling open-webui openwebui-bootstrap
+        agentgateway-config agentgateway agentgateway-ready admin proxy ollama docling open-webui openwebui-bootstrap prometheus grafana
     else
       docker_compose logs --tail=200 \
-        agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui docling open-webui openwebui-bootstrap
+        agentgateway-config agentgateway agentgateway-ready admin proxy docling open-webui openwebui-bootstrap prometheus grafana
     fi
     return 1
   fi
@@ -952,24 +1007,14 @@ validate_admin_panel_command() {
   local attempt ui_port
   ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   for attempt in {1..30}; do
-    if curl -fsS "http://127.0.0.1:${ui_port}/healthz" >/dev/null; then
+    if curl -fsS "http://127.0.0.1:${ui_port}/healthz" >/dev/null \
+      && curl -fsS "http://127.0.0.1:${ui_port}/admin/login" >/dev/null \
+      && docker_compose exec -T admin wget -q --spider "http://127.0.0.1:3000/api/health"; then
       return 0
     fi
     sleep 1
   done
   docker_compose logs --tail=100 admin proxy
-  return 1
-}
-
-validate_graph_ui_command() {
-  local attempt
-  for attempt in {1..30}; do
-    if docker_compose exec -T graph-ui wget -q --spider "http://127.0.0.1:9749/"; then
-      return 0
-    fi
-    sleep 1
-  done
-  docker_compose logs --tail=100 graph-ui proxy
   return 1
 }
 
@@ -1133,15 +1178,26 @@ validate_agentgateway_command() {
 }
 
 validate_openwebui_command() {
-  local openwebui_port
-  openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   docker_compose wait openwebui-bootstrap
-  curl -fsS "http://127.0.0.1:${openwebui_port}/health" >/dev/null || {
+  docker_compose exec -T open-webui curl -fsS "http://127.0.0.1:8080/health" >/dev/null || {
     if [[ "$OLLAMA_RUNTIME" == docker ]]; then
       docker_compose logs --tail=200 ollama docling open-webui openwebui-bootstrap
     else
       docker_compose logs --tail=200 docling open-webui openwebui-bootstrap
     fi
+    return 1
+  }
+}
+
+validate_monitoring_command() {
+  docker_compose exec -T admin node --input-type=module -e '
+    const checks = await Promise.all([
+      fetch("http://prometheus:9090/-/ready", { signal: AbortSignal.timeout(10000) }),
+      fetch("http://grafana:3000/api/health", { signal: AbortSignal.timeout(10000) })
+    ]);
+    if (checks.some(response => !response.ok)) throw new Error(`monitoring=${checks.map(response => response.status).join(",")}`);
+  ' || {
+    docker_compose logs --tail=200 prometheus grafana
     return 1
   }
 }
@@ -1194,7 +1250,7 @@ restart_and_validate_knowledge_sync_command() {
 
 migrate_openwebui_admin_command() {
   local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
-  local openwebui_port webui_secret auth_payload auth_response token user_id update_payload update_response
+  local ui_port webui_secret auth_payload auth_response token user_id update_payload update_response
 
   # Em uma instalação nova, o usuário já foi criado com a credencial desejada.
   if [[ -z "$OPENWEBUI_PREVIOUS_EMAIL" || -z "$OPENWEBUI_PREVIOUS_PASSWORD" ]]; then
@@ -1214,14 +1270,14 @@ migrate_openwebui_admin_command() {
     return 0
   fi
 
-  openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   auth_payload="$(jq -cn \
     --arg email "$OPENWEBUI_PREVIOUS_EMAIL" \
     --arg password "$OPENWEBUI_PREVIOUS_PASSWORD" \
     '{email:$email,password:$password}')"
   if ! auth_response="$(printf '%s' "$auth_payload" | curl -fsS \
     --max-time 30 \
-    "http://127.0.0.1:${openwebui_port}/api/v1/auths/signin" \
+    "http://127.0.0.1:${ui_port}/api/v1/auths/signin" \
     -H 'content-type: application/json' \
     --data-binary @-)"; then
     # Aceita também o estado em que o banco já foi alterado manualmente,
@@ -1232,7 +1288,7 @@ migrate_openwebui_admin_command() {
       '{email:$email,password:$password}')"
     auth_response="$(printf '%s' "$auth_payload" | curl -fsS \
       --max-time 30 \
-      "http://127.0.0.1:${openwebui_port}/api/v1/auths/signin" \
+      "http://127.0.0.1:${ui_port}/api/v1/auths/signin" \
       -H 'content-type: application/json' \
       --data-binary @-)"
   fi
@@ -1246,7 +1302,7 @@ migrate_openwebui_admin_command() {
     '{email:$email,name:$name,password:$password}')"
   update_response="$(printf '%s' "$update_payload" | curl -fsS \
     --max-time 30 \
-    "http://127.0.0.1:${openwebui_port}/api/v1/users/${user_id}/update" \
+    "http://127.0.0.1:${ui_port}/api/v1/users/${user_id}/update" \
     -H "Authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     --data-binary @-)"
@@ -1276,10 +1332,8 @@ validate_installation_command() {
 }
 
 show_summary() {
-  local ui_port agentgateway_ui_port openwebui_port ollama_acceleration ollama_execution
-  ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
-  agentgateway_ui_port="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
-  openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  local public_base_url ollama_acceleration ollama_execution
+  public_base_url="$(sed -n 's/^PUBLIC_BASE_URL=//p' "$ENV_FILE" | tail -n 1)"
   case "$OLLAMA_GPU_MODE" in
     all) ollama_acceleration='todas as GPUs NVIDIA' ;;
     selected) ollama_acceleration="GPUs ${OLLAMA_GPU_DEVICE_IDS}" ;;
@@ -1298,11 +1352,11 @@ show_summary() {
   printf '  Execução     : %s\n' "$ollama_execution"
   printf '  Aceleração   : %s\n' "$ollama_acceleration"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
-  printf '\nUI oficial do Codebase Memory:\n  http://<IP-ou-dominio>:%s/\n' "$ui_port"
-  printf '\nPainel administrativo protegido:\n  http://<IP-ou-dominio>:%s/admin/\n\n' "$ui_port"
-  printf 'AgentGateway Admin UI protegida:\n  http://<IP-ou-dominio>:%s/mcp-panel/\n' "$agentgateway_ui_port"
-  printf '\nEndpoint MCP remoto:\n  http://<IP-ou-dominio>:%s/mcp\n\n' "$ui_port"
-  printf 'Open WebUI:\n  http://<IP-ou-dominio>:%s/\n\n' "$openwebui_port"
+  printf '\nOpen WebUI:\n  %s/\n' "$public_base_url"
+  printf '\nPainel administrativo com login próprio:\n  %s/admin/\n' "$public_base_url"
+  printf '\nGrafana com login próprio:\n  %s/grafana/\n' "$public_base_url"
+  printf '\nEndpoint MCP remoto:\n  %s/mcp\n\n' "$public_base_url"
+  printf 'Prometheus, AgentGateway Admin, Ollama, Docling e workers: somente rede interna.\n\n'
   printf 'Google Drive  : configure em Bases e Drive no painel administrativo.\n\n'
 }
 
@@ -1316,6 +1370,7 @@ main() {
   ask_ollama_model
   ask_ollama_gpu
   ask_proxy_access
+  ask_public_base_url
   validate_sudo
   keep_sudo_alive
   success "Configuração concluída; iniciando instalação não interativa"
@@ -1338,9 +1393,9 @@ main() {
     run_step "Validando o acesso do Ollama às GPUs" validate_ollama_gpu_command
   fi
   run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
-  run_step "Aguardando a UI do grafo ficar disponível" validate_graph_ui_command
-  run_step "Aguardando a Admin UI do AgentGateway ficar disponível" validate_agentgateway_command
+  run_step "Validando o AgentGateway e o endpoint MCP" validate_agentgateway_command
   run_step "Baixando modelos e configurando o Open WebUI" validate_openwebui_command
+  run_step "Validando Prometheus e Grafana" validate_monitoring_command
   run_step "Sincronizando a credencial administrativa do Open WebUI" migrate_openwebui_admin_command
   run_step "Preparando o worker do Google Drive" restart_and_validate_knowledge_sync_command
   show_summary

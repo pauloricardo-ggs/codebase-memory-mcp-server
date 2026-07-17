@@ -1,0 +1,20 @@
+{
+  "name": "exemplo-rag-corporativo",
+  "minimumPassRate": 0.8,
+  "knowledgeBaseIds": ["SUBSTITUA-PELO-ID-DA-KB"],
+  "cases": [
+    {
+      "id": "politica-reembolso-prazo",
+      "question": "Qual é o prazo para solicitar reembolso?",
+      "requiredFacts": ["30 dias", "comprovante"],
+      "forbiddenFacts": ["60 dias"],
+      "expectedDocuments": ["politica-reembolso.pdf"]
+    },
+    {
+      "id": "pergunta-sem-resposta",
+      "question": "Qual é a política para viagens interplanetárias?",
+      "expectAbstention": true,
+      "expectedDocuments": []
+    }
+  ]
+}

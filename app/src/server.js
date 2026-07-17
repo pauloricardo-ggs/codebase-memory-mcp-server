@@ -6,6 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertSafeSegment, DEFAULT_TIMEZONE, DEFAULT_WORKSPACE_CRON, cronMatches, decryptWorkspaceToken, describeCron, encryptWorkspaceToken, generateMcpToken, gitAuthEnvironment, indexRepositoryArguments, loadCredentials, loadMcpUserStore, loadSecret, loadState, mcpTokenFingerprint, nextCronOccurrence, parseCronExpression, parseLastJsonLine, publicMcpUser, publicWorkspace, reconcileRepositoryProjects, removeMcpGatewayUserKey, run, safeChild, saveCredentials, saveMcpUserStore, saveSecret, saveState, setMcpGatewayUserKey, slugify, validateTimezone } from './lib.js';
 import { startMcpGuardrailServer } from './mcp-guardrail.js';
+import { gauge, increment, log as structuredLog, metricsText, observe } from './observability.js';
+import { createAdminAuth } from './auth.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -21,7 +23,6 @@ const GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE = path.join(DATA_DIR, 'secrets', 'knowle
 const CBM_BIN = process.env.CBM_BIN || 'codebase-memory-mcp';
 const PORT = Number(process.env.PORT || 3000);
 const UI_PORT = Number(process.env.UI_PORT);
-const AGENTGATEWAY_UI_PORT = Number(process.env.AGENTGATEWAY_UI_PORT);
 const AGENTGATEWAY_ADMIN_URL = String(process.env.AGENTGATEWAY_ADMIN_URL || 'http://agentgateway:15000').replace(/\/+$/, '');
 const MCP_GUARDRAIL_ADDR = process.env.MCP_GUARDRAIL_ADDR || '0.0.0.0:3001';
 const CBM_PROJECT_RECONCILE = process.env.CBM_PROJECT_RECONCILE !== 'false';
@@ -29,6 +30,10 @@ const WORKSPACE_TIMEZONE = process.env.WORKSPACE_TIMEZONE || DEFAULT_TIMEZONE;
 const REPOSITORY_SYNC_CONCURRENCY = Math.max(1, Math.min(20, Number.parseInt(process.env.REPOSITORY_SYNC_CONCURRENCY || '3', 10) || 3));
 const KNOWLEDGE_SYNC_ENABLED = process.env.KNOWLEDGE_SYNC_ENABLED !== 'false';
 const KNOWLEDGE_SYNC_URL = String(process.env.KNOWLEDGE_SYNC_URL || 'http://knowledge-sync:3002').replace(/\/+$/, '');
+const ADMIN_AUTH_USERNAME = process.env.ADMIN_AUTH_USERNAME || '';
+const ADMIN_AUTH_PASSWORD = process.env.ADMIN_AUTH_PASSWORD || '';
+const ADMIN_JWT_SECRET_FILE = process.env.ADMIN_JWT_SECRET_FILE || path.join(DATA_DIR, 'secrets', 'admin-jwt-secret');
+const ADMIN_COOKIE_SECURE = process.env.ADMIN_COOKIE_SECURE === 'true';
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
@@ -59,6 +64,9 @@ if (stateMigrated || schedulesMigrated) await saveState(STATE_FILE, state);
 if (mcpUsersMigrated) await saveMcpUserStore(MCP_USERS_FILE, mcpUserStore);
 let mcpSystemToken = await loadSecret(MCP_SYSTEM_TOKEN_FILE);
 let knowledgeSyncToken = KNOWLEDGE_SYNC_ENABLED ? await loadSecret(KNOWLEDGE_SYNC_TOKEN_FILE) : '';
+const adminJwtSecret = await loadSecret(ADMIN_JWT_SECRET_FILE);
+const adminAuth = await createAdminAuth({ username: ADMIN_AUTH_USERNAME, password: ADMIN_AUTH_PASSWORD, secret: adminJwtSecret });
+const loginAttempts = new Map();
 let mcpWorkspaceEncryptionKey = await loadSecret(MCP_WORKSPACE_KEY_FILE);
 if (!mcpWorkspaceEncryptionKey) {
   mcpWorkspaceEncryptionKey = generateMcpToken();
@@ -89,8 +97,99 @@ function json(response, status, payload) {
 }
 
 function errorResponse(response, error, status = error.status || 400) {
-  console.error(error);
+  structuredLog('error', 'request_failed', { status, error: error.message });
   json(response, status, { error: error.message || 'Erro inesperado.' });
+}
+
+function textResponse(response, status, payload, contentType = 'text/plain; charset=utf-8') {
+  response.writeHead(status, { 'content-type': contentType, 'cache-control': 'no-store' });
+  response.end(payload);
+}
+
+function redirect(response, location) {
+  response.writeHead(302, { location, 'cache-control': 'no-store' });
+  response.end();
+}
+
+function secureRequest(request) {
+  return ADMIN_COOKIE_SECURE || String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+}
+
+function requestOriginAllowed(request) {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  try {
+    const host = String(request.headers['x-forwarded-host'] || request.headers.host || '').split(',')[0].trim();
+    return new URL(origin).host === host;
+  } catch { return false; }
+}
+
+function clientAddress(request) {
+  return String(request.headers['x-real-ip'] || request.socket.remoteAddress || 'unknown');
+}
+
+function loginAllowed(request) {
+  const key = clientAddress(request);
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  if (!current || current.resetAt <= now) return true;
+  return current.failures < 5;
+}
+
+function registerLoginFailure(request) {
+  const key = clientAddress(request);
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  loginAttempts.set(key, !current || current.resetAt <= now
+    ? { failures: 1, resetAt: now + 5 * 60_000 }
+    : { ...current, failures: current.failures + 1 });
+}
+
+async function routeAuth(request, response, url) {
+  if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+    if (!requestOriginAllowed(request)) return json(response, 403, { error: 'Origem não permitida.' });
+    if (!loginAllowed(request)) return json(response, 429, { error: 'Muitas tentativas. Aguarde alguns minutos.' });
+    const payload = await body(request);
+    if (!await adminAuth.verifyCredentials(payload.username, payload.password)) {
+      registerLoginFailure(request);
+      return json(response, 401, { error: 'Usuário ou senha inválidos.' });
+    }
+    loginAttempts.delete(clientAddress(request));
+    const token = adminAuth.issueToken();
+    response.setHeader('set-cookie', adminAuth.sessionCookie(token, secureRequest(request)));
+    return json(response, 200, { user: { username: adminAuth.username, role: 'admin' } });
+  }
+  if (url.pathname === '/api/auth/session' && request.method === 'GET') {
+    const session = adminAuth.session(request);
+    return session
+      ? json(response, 200, { user: { username: session.sub, role: session.role } })
+      : json(response, 401, { error: 'Autenticação necessária.' });
+  }
+  if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
+    if (!requestOriginAllowed(request)) return json(response, 403, { error: 'Origem não permitida.' });
+    adminAuth.revoke(adminAuth.tokenFromRequest(request));
+    response.setHeader('set-cookie', adminAuth.clearCookie(secureRequest(request)));
+    return json(response, 200, { ok: true });
+  }
+  return json(response, 404, { error: 'Rota não encontrada.' });
+}
+
+async function probe(name, url, options = {}) {
+  const started = performance.now();
+  try {
+    const result = await fetch(url, { ...options, signal: AbortSignal.timeout(3_000) });
+    return { name, ok: result.status < 500, status: result.status, durationMs: Math.round(performance.now() - started) };
+  } catch (error) {
+    return { name, ok: false, error: error.message, durationMs: Math.round(performance.now() - started) };
+  }
+}
+
+async function dependencyHealth() {
+  const checks = await Promise.all([
+    probe('agentgateway', `${AGENTGATEWAY_ADMIN_URL}/`),
+    ...(KNOWLEDGE_SYNC_ENABLED ? [probe('knowledge-sync', `${KNOWLEDGE_SYNC_URL}/health/ready`)] : [])
+  ]);
+  return { status: checks.every(check => check.ok) ? 'ready' : 'not_ready', checks };
 }
 
 async function knowledgeSyncRequest(pathname, { method = 'GET', payload } = {}) {
@@ -529,6 +628,7 @@ function createJob(type, label, lockKey, operation) {
   jobs.unshift(job);
   jobs.splice(50);
   locks.add(lockKey);
+  gauge('cbm_jobs_active', locks.size);
 
   setImmediate(async () => {
     job.status = 'running';
@@ -538,16 +638,20 @@ function createJob(type, label, lockKey, operation) {
       await operation(job, log);
       job.progress = 100;
       job.status = 'completed';
+      increment('cbm_jobs_total', { type, status: 'completed' });
     } catch (error) {
       job.status = 'failed';
       job.error = error.message;
+      increment('cbm_jobs_total', { type, status: 'failed' });
       const [workspaceId, repositoryId] = lockKey.split('/');
       const affectedRepository = state.repositories.find(item => item.workspaceId === workspaceId && item.id === repositoryId);
       if (affectedRepository) affectedRepository.status = 'error';
       log(`\n${error.message}\n`);
     } finally {
       job.finishedAt = new Date().toISOString();
+      observe('cbm_job_duration_seconds', (Date.parse(job.finishedAt) - Date.parse(job.startedAt)) / 1000, { type, status: job.status });
       locks.delete(lockKey);
+      gauge('cbm_jobs_active', locks.size);
       await persist().catch(console.error);
     }
   });
@@ -726,8 +830,25 @@ async function routeApi(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/api/health') {
     return json(response, 200, { status: 'ok' });
   }
+  if (request.method === 'GET' && url.pathname === '/api/health/live') return json(response, 200, { status: 'ok' });
+  if (request.method === 'GET' && ['/api/health/ready', '/api/health/detail'].includes(url.pathname)) {
+    const health = await dependencyHealth();
+    return json(response, health.status === 'ready' ? 200 : 503, health);
+  }
+  if (request.method === 'GET' && url.pathname === '/api/metrics') {
+    let combined = metricsText();
+    if (KNOWLEDGE_SYNC_ENABLED) {
+      try {
+        const worker = await fetch(`${KNOWLEDGE_SYNC_URL}/metrics`, { signal: AbortSignal.timeout(3_000) });
+        if (worker.ok) combined += await worker.text();
+      } catch (error) {
+        structuredLog('warn', 'worker_metrics_unavailable', { error: error.message });
+      }
+    }
+    return textResponse(response, 200, combined, 'text/plain; version=0.0.4; charset=utf-8');
+  }
   if (request.method === 'GET' && url.pathname === '/api/config') {
-    return json(response, 200, { uiPort: UI_PORT, agentgatewayUiPort: AGENTGATEWAY_UI_PORT, knowledgeSyncEnabled: KNOWLEDGE_SYNC_ENABLED });
+    return json(response, 200, { uiPort: UI_PORT, knowledgeSyncEnabled: KNOWLEDGE_SYNC_ENABLED });
   }
   if (url.pathname === '/api/knowledge-sync/credentials') {
     if (request.method === 'GET') {
@@ -1010,12 +1131,18 @@ async function routeApi(request, response, url) {
 }
 
 function serveStatic(response, pathname) {
-  const requested = pathname === '/' ? 'index.html' : pathname.slice(1);
+  const requested = pathname === '/' ? 'index.html' : pathname === '/login' ? 'login.html' : pathname.slice(1);
   const file = safeChild(PUBLIC_DIR, requested);
   const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
   stat(file).then(info => {
     if (!info.isFile()) throw new Error('not found');
-    response.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream' });
+    response.writeHead(200, {
+      'content-type': types[path.extname(file)] || 'application/octet-stream',
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      'referrer-policy': 'no-referrer',
+      'cache-control': path.extname(file) === '.html' ? 'no-store' : 'private, max-age=300'
+    });
     createReadStream(file).pipe(response);
   }).catch(() => { response.writeHead(404); response.end('Not found'); });
 }
@@ -1061,7 +1188,24 @@ await provisionWorkspaceMcpTokens();
 http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
   try {
-    if (url.pathname.startsWith('/api/')) await routeApi(request, response, url);
-    else serveStatic(response, url.pathname);
+    if (url.pathname.startsWith('/api/')) {
+      if (url.pathname.startsWith('/api/auth/')) return await routeAuth(request, response, url);
+      if (['/api/health', '/api/health/live', '/api/health/ready', '/api/health/detail', '/api/metrics'].includes(url.pathname)) {
+        return await routeApi(request, response, url);
+      }
+      if (!adminAuth.session(request)) return json(response, 401, { error: 'Autenticação necessária.' });
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !requestOriginAllowed(request)) {
+        return json(response, 403, { error: 'Origem não permitida.' });
+      }
+      return await routeApi(request, response, url);
+    }
+    const publicAsset = ['/login', '/login.html', '/login.js', '/styles.css'].includes(url.pathname);
+    const session = adminAuth.session(request);
+    if (publicAsset) {
+      if (session && ['/login', '/login.html'].includes(url.pathname)) return redirect(response, '/admin/');
+      return serveStatic(response, url.pathname);
+    }
+    if (!session) return redirect(response, '/admin/login');
+    serveStatic(response, url.pathname);
   } catch (error) { errorResponse(response, error); }
 }).listen(PORT, '0.0.0.0', () => console.log(`Codebase Memory Admin em http://0.0.0.0:${PORT}`));

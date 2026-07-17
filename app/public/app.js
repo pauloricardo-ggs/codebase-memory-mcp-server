@@ -24,6 +24,10 @@ const date = value => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle:'shor
 async function api(url, options = {}) {
   const adminUrl = url.startsWith('/api/') ? `/admin${url}` : url;
   const response = await fetch(adminUrl, { ...options, headers: { 'content-type':'application/json', ...options.headers } });
+  if (response.status === 401) {
+    location.assign('/admin/login');
+    throw new Error('Sua sessão expirou. Entre novamente.');
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || 'Não foi possível concluir a operação.');
   return payload;
@@ -53,24 +57,6 @@ modal.querySelector('form').addEventListener('submit', event => {
   const submitButton = $(`[data-action="${action}"]`, modal);
   if (submitButton && !submitButton.disabled) submitButton.click();
 });
-
-function graphUrl(project = '') {
-  const url = new URL('/', location.origin);
-  if (project) {
-    url.searchParams.set('tab', 'graph');
-    url.searchParams.set('project', project);
-  }
-  return url.toString();
-}
-
-function mcpPanelUrl() {
-  const url = new URL(location.href);
-  url.port = String(publicConfig.agentgatewayUiPort);
-  url.pathname = '/mcp-panel/';
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-}
 
 async function renderGithub() {
   const connection = await api('/api/github/connection');
@@ -115,7 +101,6 @@ function repositoryRow(repo) {
       </div>
 
       <div class="repo-actions">
-        ${repo.project ? `<button class="button small graph-button" data-action="open-graph-ui" data-project="${escapeHtml(repo.project)}">Explorar ↗</button>` : ''}
         <button class="button small" data-action="sync" data-repo="${repo.id}">Sincronizar</button>
         <button class="button small" data-action="index" data-repo="${repo.id}">Indexar</button>
         <button class="button small danger" data-action="delete-repo" data-repo="${repo.id}" data-name="${escapeHtml(repo.fullName)}">Excluir</button>
@@ -144,6 +129,7 @@ function editScheduleModal(schedule) {
 function syncStatusLabel(target) {
   if (target?.running) return 'Sincronizando';
   if (target?.lastRunStatus === 'failed') return 'Falhou';
+  if (target?.lastRunStatus === 'partial') return 'Atenção';
   if (!target?.enabled) return 'Pausada';
   if (target?.lastRunStatus === 'completed') return 'Ativa';
   return target ? 'Aguardando' : 'Sem vínculo';
@@ -151,12 +137,12 @@ function syncStatusLabel(target) {
 
 function knowledgeSyncStats(target) {
   const status = syncStatusLabel(target);
-  const statusClass = target?.running ? 'running' : target?.lastRunStatus === 'failed' ? 'failed' : target?.enabled ? 'active' : 'revoked';
-  return `<small>Sincronização</small><span class="status ${statusClass}">${status}</span>${target ? `<span>${target.managedFileCount} arquivo${target.managedFileCount === 1 ? '' : 's'} · ${escapeHtml(target.scheduleDescription)}</span><span>Próxima: ${date(target.nextRunAt)}</span><span>Última: ${date(target.lastRunAt)}</span>` : '<span>Configure para iniciar</span>'}${target?.lastError ? `<span class="sync-error" title="${escapeHtml(target.lastError)}">${escapeHtml(target.lastError)}</span>` : ''}`;
+  const statusClass = target?.running ? 'running' : ['failed', 'partial'].includes(target?.lastRunStatus) ? 'failed' : target?.enabled ? 'active' : 'revoked';
+  return `<small>Sincronização</small><span class="status ${statusClass}">${status}</span>${target ? `<span>${target.managedFileCount} arquivo${target.managedFileCount === 1 ? '' : 's'}${target.failedFileCount ? ` · ${target.failedFileCount} com falha` : ''} · ${escapeHtml(target.scheduleDescription)}</span><span>Próxima: ${date(target.nextRunAt)}</span><span>Última: ${date(target.lastRunAt)}</span>` : '<span>Configure para iniciar</span>'}${target?.lastError ? `<span class="sync-error" title="${escapeHtml(target.lastError)}">${escapeHtml(target.lastError)}</span>` : ''}`;
 }
 
 function knowledgeSyncActions(knowledgeBase, target, driveConfigured) {
-  return `${target ? `<button class="button small" data-action="run-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${target.running || !driveConfigured ? 'disabled' : ''}>Sincronizar agora</button><button class="button small" data-action="toggle-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target.enabled ? 'Pausar' : 'Ativar'}</button><button class="button small" data-action="knowledge-sync-history" data-kb="${escapeHtml(knowledgeBase.id)}">Histórico</button><button class="button small danger" data-action="delete-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}">Desvincular</button>` : ''}
+  return `${target ? `<button class="button small" data-action="run-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${target.running || !driveConfigured ? 'disabled' : ''}>Sincronizar agora</button><button class="button small" data-action="knowledge-sync-files" data-kb="${escapeHtml(knowledgeBase.id)}">Arquivos</button><button class="button small" data-action="toggle-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target.enabled ? 'Pausar' : 'Ativar'}</button><button class="button small" data-action="knowledge-sync-history" data-kb="${escapeHtml(knowledgeBase.id)}">Histórico</button><button class="button small danger" data-action="delete-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" data-name="${escapeHtml(knowledgeBase.name)}">Desvincular</button>` : ''}
     <button class="button small ${target ? '' : 'primary'}" data-action="configure-knowledge-sync" data-kb="${escapeHtml(knowledgeBase.id)}" ${driveConfigured ? '' : 'disabled'}>${target ? 'Editar vínculo' : 'Vincular pastas'}</button>`;
 }
 
@@ -304,7 +290,13 @@ async function knowledgeSyncModal(knowledgeBaseId) {
 
 async function knowledgeSyncHistoryModal(knowledgeBaseId) {
   const { history } = await api(`/api/knowledge-sync/history?knowledgeBaseId=${encodeURIComponent(knowledgeBaseId)}`);
-  openModal(`<h2 class="modal-title">Histórico de sincronização</h2><p class="modal-copy">Execuções mais recentes desta Knowledge Base.</p>${history.length ? `<div class="sync-history">${history.map(run => `<article><div><strong>${date(run.startedAt)}</strong><span class="status ${run.status === 'completed' ? 'completed' : 'failed'}">${run.status === 'completed' ? 'Concluída' : 'Falhou'}</span></div><small>+${run.added} adicionados · ~${run.modified} alterados · −${run.deleted} removidos · ${run.unchanged} sem mudança</small>${run.error ? `<p>${escapeHtml(run.error)}</p>` : ''}</article>`).join('')}</div>` : '<div class="empty" style="min-height:160px">Nenhuma execução registrada.</div>'}<div class="modal-actions"><button class="button" value="cancel">Fechar</button></div>`);
+  openModal(`<h2 class="modal-title">Histórico de sincronização</h2><p class="modal-copy">Execuções mais recentes desta Knowledge Base.</p>${history.length ? `<div class="sync-history">${history.map(run => `<article><div><strong>${date(run.startedAt)}</strong><span class="status ${run.status === 'completed' ? 'completed' : 'failed'}">${run.status === 'completed' ? 'Concluída' : run.status === 'partial' ? 'Parcial' : 'Falhou'}</span></div><small>+${run.added} adicionados · ~${run.modified} alterados · −${run.deleted} removidos · ${run.unchanged} sem mudança${run.failed ? ` · ${run.failed} falharam` : ''}${run.durationMs ? ` · ${Math.round(run.durationMs / 1000)}s` : ''}</small>${run.error ? `<p>${escapeHtml(run.error)}</p>` : ''}</article>`).join('')}</div>` : '<div class="empty" style="min-height:160px">Nenhuma execução registrada.</div>'}<div class="modal-actions"><button class="button" value="cancel">Fechar</button></div>`);
+}
+
+async function knowledgeSyncFilesModal(knowledgeBaseId) {
+  const { files } = await api(`/api/knowledge-sync/targets/${encodeURIComponent(knowledgeBaseId)}/files`);
+  const rows = files.map(file => `<article class="managed-file-row"><div><strong>${escapeHtml(file.filename)}</strong><small>${escapeHtml(file.managedPath || 'Google Drive')} · alterado ${date(file.modifiedTime)}</small>${file.error ? `<p>${escapeHtml(file.error)}</p>` : ''}</div><span class="status ${file.status === 'failed' ? 'failed' : 'completed'}">${file.status === 'failed' ? 'Falhou' : 'Indexado'}</span><button class="button small" type="button" data-action="reprocess-knowledge-file" data-kb="${escapeHtml(knowledgeBaseId)}" data-source-key="${escapeHtml(file.sourceKey)}">${file.status === 'failed' ? 'Tentar novamente' : 'Reprocessar'}</button></article>`).join('');
+  openModal(`<h2 class="modal-title">Arquivos gerenciados</h2><p class="modal-copy">Reprocesse um documento sem varrer novamente todas as pastas vinculadas.</p><div class="managed-files">${rows || '<div class="empty" style="min-height:160px">Nenhum arquivo sincronizado.</div>'}</div><div class="modal-actions"><button class="button" value="cancel">Fechar</button></div>`);
 }
 
 function renderJobs() {
@@ -576,6 +568,12 @@ document.addEventListener('click', async event => {
       toast(current.enabled ? 'Sincronização pausada.' : 'Sincronização ativada.'); return renderKnowledgeSync();
     }
     if (action === 'knowledge-sync-history') return knowledgeSyncHistoryModal(target.dataset.kb);
+    if (action === 'knowledge-sync-files') return knowledgeSyncFilesModal(target.dataset.kb);
+    if (action === 'reprocess-knowledge-file') {
+      target.disabled = true;
+      await api(`/api/knowledge-sync/targets/${encodeURIComponent(target.dataset.kb)}/files/${encodeURIComponent(target.dataset.sourceKey)}/reprocess`, { method:'POST' });
+      closeModal(); toast('Reprocessamento adicionado à fila.'); return renderKnowledgeSync();
+    }
     if (action === 'delete-knowledge-sync') {
       if (!confirm(`Desvincular ${target.dataset.name}? Os arquivos enviados pelo worker serão removidos da base, mas permanecerão no Google Drive.`)) return;
       await api(`/api/knowledge-sync/targets/${target.dataset.kb}?deleteFiles=true`, { method:'DELETE' });
@@ -673,8 +671,11 @@ document.addEventListener('click', async event => {
       if (!confirm(`Excluir ${target.dataset.name}? Qualquer token ativo será revogado e o cadastro será removido.`)) return;
       await api(`/api/mcp-users/${target.dataset.user}`, { method:'DELETE' }); toast('Usuário MCP excluído.'); return renderMcpUsers();
     }
-    if (action === 'open-graph-ui') { window.open(graphUrl(target.dataset.project || ''), '_blank', 'noopener,noreferrer'); return; }
-    if (action === 'open-mcp-panel') { window.open(mcpPanelUrl(), '_blank', 'noopener,noreferrer'); return; }
+    if (action === 'logout') {
+      await api('/api/auth/logout', { method:'POST', body:'{}' });
+      location.assign('/admin/login');
+      return;
+    }
     if (action === 'back') return renderWorkspaces();
     if (action === 'connect-github') return connectGithubModal();
     if (action === 'disconnect-github') { await api('/api/github/connection', { method:'DELETE' }); await renderGithub(); return toast('GitHub desconectado.'); }
@@ -688,6 +689,8 @@ document.addEventListener('click', async event => {
   } catch (error) { target.disabled = false; toast(error.message, 'error'); }
 });
 
+const session = await api('/api/auth/session');
+$('#admin-identity').textContent = session.user.username;
 publicConfig = await api('/api/config');
 await Promise.all([renderGithub(), renderWorkspaces(), refreshJobs()]);
 setInterval(refreshJobs, 3000);

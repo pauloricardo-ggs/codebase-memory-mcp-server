@@ -61,6 +61,9 @@ services:
     depends_on:
       agentgateway:
         condition: service_started
+    env_file:
+      - path: ./data/secrets/admin.env
+        required: false
     environment:
       PORT: "3000"
       APP_DATA_DIR: /data/app
@@ -69,7 +72,7 @@ services:
       CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
       CBM_BIN: /usr/local/bin/codebase-memory-mcp
       UI_PORT: "${UI_PORT:-8787}"
-      AGENTGATEWAY_UI_PORT: "${AGENTGATEWAY_UI_PORT:-8788}"
+      ADMIN_JWT_SECRET_FILE: /data/app/secrets/admin-jwt-secret
       WORKSPACE_TIMEZONE: "${WORKSPACE_TIMEZONE:-America/Maceio}"
       REPOSITORY_SYNC_CONCURRENCY: "${REPOSITORY_SYNC_CONCURRENCY:-3}"
       AGENTGATEWAY_ADMIN_URL: http://agentgateway:15000
@@ -107,40 +110,14 @@ services:
         condition: service_completed_successfully
       admin:
         condition: service_healthy
+      open-webui:
+        condition: service_healthy
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf.template:ro
-      - ./data/secrets/proxy:/etc/nginx/secrets:ro
     ports:
       - "${UI_PORT:-8787}:8080"
-      - "${AGENTGATEWAY_UI_PORT:-8788}:8081"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
-      interval: 10s
-      timeout: 3s
-      retries: 6
-      start_period: 5s
-
-  graph-ui:
-    build:
-      context: ./app
-    user: "${LOCAL_UID}:${LOCAL_GID}"
-    init: true
-    restart: unless-stopped
-    network_mode: "service:proxy"
-    entrypoint: ["/bin/sh", "-c"]
-    # O servidor MCP encerra ao receber EOF. O tail mantém o stdin aberto
-    # enquanto a UI roda em modo detached.
-    command: ["tail -f /dev/null | /usr/local/bin/codebase-memory-mcp --ui=true --port=9749"]
-    environment:
-      CBM_ALLOWED_ROOT: /data/repositories
-      CBM_CACHE_DIR: /data/cache
-      CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
-    volumes:
-      - ./repositories:/data/repositories
-      - ./cache:/data/cache
-      - ${CBM_HOST_BIN}:/usr/local/bin/codebase-memory-mcp:ro
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9749/"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -196,6 +173,7 @@ services:
     env_file:
       - ./data/secrets/openwebui.env
     environment:
+      WEBUI_URL: "${PUBLIC_BASE_URL:-http://localhost:8787}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
       RAG_EMBEDDING_ENGINE: ollama
       RAG_EMBEDDING_MODEL: bge-m3
@@ -214,8 +192,8 @@ services:
       AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER: "120"
     volumes:
       - openwebui-data:/app/backend/data
-    ports:
-      - "${OPENWEBUI_PORT:-3000}:8080"
+    expose:
+      - "8080"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 10s
@@ -268,18 +246,54 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-drive-service-account.json
       KNOWLEDGE_SYNC_TOKEN_FILE: /run/secrets/knowledge-sync-token
       KNOWLEDGE_SYNC_TIMEZONE: "${WORKSPACE_TIMEZONE:-America/Maceio}"
+      KNOWLEDGE_SYNC_FULL_RECONCILIATION_HOURS: "${KNOWLEDGE_SYNC_FULL_RECONCILIATION_HOURS:-168}"
+      KNOWLEDGE_SYNC_HTTP_RETRY_ATTEMPTS: "${KNOWLEDGE_SYNC_HTTP_RETRY_ATTEMPTS:-3}"
     volumes:
       - ./data/knowledge-sync:/data
       - ./data/secrets/knowledge-sync:/run/secrets:ro
     expose:
       - "3002"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 6
       start_period: 10s
 
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=30d"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    expose:
+      - "9090"
+
+  grafana:
+    image: grafana/grafana:12.3.1
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    env_file:
+      - path: ./data/secrets/monitoring.env
+        required: false
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "${PUBLIC_BASE_URL:-http://localhost:8787}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/codebase-memory-operation.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    expose:
+      - "3000"
+
 volumes:
   ollama-data:
   openwebui-data:
+  prometheus-data:
+  grafana-data:

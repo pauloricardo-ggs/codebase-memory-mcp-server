@@ -1,17 +1,19 @@
 # Codebase Memory MCP Server
 
-Ambiente autogerenciado para disponibilizar repositórios a clientes MCP, explorar grafos de código e manter Knowledge Bases corporativas com Open WebUI, Ollama, Docling e Google Drive.
+Ambiente autogerenciado para disponibilizar repositórios a clientes MCP e manter Knowledge Bases corporativas com Open WebUI, Ollama, Docling e Google Drive.
 
 ## Recursos
 
 - painel para workspaces, repositórios, indexação e sincronização Git;
 - endpoint MCP remoto protegido por tokens de workspace ou usuário;
 - controle de acesso por repositório;
-- interface de exploração dos grafos indexados;
 - Open WebUI com chat e RAG híbrido;
 - embeddings multilíngues com `bge-m3` e reranking;
 - extração de documentos, OCR adaptativo e tabelas com Docling em CPU;
 - sincronização incremental Drive → Knowledge Base por cron;
+- reprocessamento seletivo, histórico por arquivo e detecção incremental via Drive Changes API;
+- health detalhado, métricas Prometheus e Grafana instalados por padrão;
+- runner versionável para avaliação do RAG documental;
 - Ollama em Docker no Linux ou nativo no macOS.
 
 ## Requisitos
@@ -38,7 +40,8 @@ O instalador solicita:
 - orçamento de memória do Codebase Memory;
 - runtime e modelo do Ollama;
 - aceleração NVIDIA, quando disponível;
-- e-mail e senha administrativos.
+- e-mail e senha administrativos;
+- URL pública, usando `http://localhost:8787` como padrão.
 
 Ele cria `.env`, prepara diretórios e segredos, constrói os serviços, baixa o modelo de chat e o `bge-m3`, configura presets do Open WebUI e valida o endpoint MCP. Reinstalações preservam dados e configurações válidas.
 
@@ -48,13 +51,13 @@ O Google Drive é configurado depois da instalação, pelo painel. Consulte [Con
 
 | Serviço | Endereço |
 | --- | --- |
-| Explorador de grafos | `http://<servidor>:8787/` |
+| Open WebUI | `http://<servidor>:8787/` |
 | Painel administrativo | `http://<servidor>:8787/admin/` |
 | Endpoint MCP | `http://<servidor>:8787/mcp` |
-| Painel do AgentGateway | `http://<servidor>:8788/mcp-panel/` |
-| Open WebUI | `http://<servidor>:3000/` |
+| Grafana | `http://<servidor>:8787/grafana/` |
 
-As interfaces usam as credenciais administrativas. `/mcp` usa um token MCP.
+O Open WebUI e o Grafana usam seus próprios logins. O painel administrativo possui sessão JWT própria, limitada a `/admin`, e `/mcp` usa tokens MCP individuais. Somente a porta do proxy é publicada; Prometheus e os demais backends permanecem na rede Docker.
+O dashboard provisionado **Codebase Memory — Operação** é aberto como página inicial e acompanha saúde, sincronizações, arquivos, jobs, erros externos, latência e memória.
 
 ## Primeiro uso
 
@@ -109,11 +112,13 @@ A sincronização do Drive usa cron por Knowledge Base. O padrão `30 * * * *` v
 - [Arquitetura e operação técnica](ARCHITECTURE.md)
 - [Configuração e manutenção](CONFIGURATION.md)
 - [Configurar Google Drive](GOOGLE-DRIVE-CONFIG.md)
+- [Avaliar a qualidade do RAG](RAG-EVALUATION.md)
 - [Skill Company Codebase Memory](skills/company-codebase-memory/)
 
 ## Segurança
 
 - não exponha o ambiente diretamente à internet sem HTTPS e controles de rede;
+- restrinja a porta do proxy ao IP corporativo ou à VPN;
 - restrinja as portas do Ollama quando ele rodar no host macOS;
 - use tokens individuais para escopos menores que um workspace;
 - mantenha `data/`, `.env`, chaves e tokens fora do Git;

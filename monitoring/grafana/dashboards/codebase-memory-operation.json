@@ -1,0 +1,138 @@
+{
+  "annotations": { "list": [] },
+  "description": "Saúde, sincronização do Google Drive, jobs administrativos, latência e memória do Codebase Memory.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{ "options": { "0": { "color": "red", "text": "Indisponível" }, "1": { "color": "green", "text": "Disponível" } }, "type": "value" }],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [{ "expr": "min(up{job=~\"codebase-memory-admin|knowledge-sync\"})", "legendFormat": "Serviços", "refId": "A" }],
+      "title": "Saúde dos coletores",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [{ "expr": "sum(increase(drive_sync_runs_total{status=~\"failed|partial\"}[$__range]))", "legendFormat": "Falhas", "refId": "A" }],
+      "title": "Sincronizações com falha",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [{ "expr": "max(drive_sync_queue_size)", "legendFormat": "Na fila", "refId": "A" }],
+      "title": "Fila do Drive",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] } }, "overrides": [] },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "center", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [{ "expr": "max(cbm_jobs_active)", "legendFormat": "Ativos", "refId": "A" }],
+      "title": "Jobs administrativos ativos",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "id": 5,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "sum by (mode, status) (rate(drive_sync_duration_seconds_sum[5m])) / clamp_min(sum by (mode, status) (rate(drive_sync_duration_seconds_count[5m])), 1e-9)", "legendFormat": "Sync {{mode}} / {{status}}", "refId": "A" },
+        { "expr": "sum(rate(openwebui_ingestion_duration_seconds_sum[5m])) / clamp_min(sum(rate(openwebui_ingestion_duration_seconds_count[5m])), 1e-9)", "legendFormat": "Ingestão Open WebUI", "refId": "B" },
+        { "expr": "sum(rate(drive_download_duration_seconds_sum[5m])) / clamp_min(sum(rate(drive_download_duration_seconds_count[5m])), 1e-9)", "legendFormat": "Download Drive", "refId": "C" }
+      ],
+      "title": "Latência média",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "id": 6,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "expr": "sum by (operation, status) (increase(drive_sync_files_total[$__interval]))", "legendFormat": "{{operation}} / {{status}}", "refId": "A" }],
+      "title": "Arquivos processados",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "id": 7,
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "cbm_admin_process_resident_memory_bytes{job=\"codebase-memory-admin\"}", "legendFormat": "Admin RSS", "refId": "A" },
+        { "expr": "knowledge_sync_process_resident_memory_bytes{job=\"knowledge-sync\"}", "legendFormat": "Knowledge Sync RSS", "refId": "B" },
+        { "expr": "cbm_admin_process_heap_used_bytes{job=\"codebase-memory-admin\"}", "legendFormat": "Admin heap", "refId": "C" },
+        { "expr": "knowledge_sync_process_heap_used_bytes{job=\"knowledge-sync\"}", "legendFormat": "Knowledge Sync heap", "refId": "D" }
+      ],
+      "title": "Memória dos serviços instrumentados",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "id": 8,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "expr": "sum by (provider, status) (rate(knowledge_sync_http_requests_total{status=~\"429|5..|network_error\"}[5m]))", "legendFormat": "{{provider}} / {{status}}", "refId": "A" }],
+      "title": "Erros de integrações externas",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "id": 9,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "expr": "sum by (type, status) (increase(cbm_jobs_total[$__interval]))", "legendFormat": "{{type}} / {{status}}", "refId": "A" }],
+      "title": "Jobs por tipo e resultado",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "id": 10,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "expr": "sum by (type, status) (rate(cbm_job_duration_seconds_sum[5m])) / clamp_min(sum by (type, status) (rate(cbm_job_duration_seconds_count[5m])), 1e-9)", "legendFormat": "{{type}} / {{status}}", "refId": "A" }],
+      "title": "Duração média dos jobs",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["codebase-memory", "provisioned"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Codebase Memory — Operação",
+  "uid": "codebase-memory-operation",
+  "version": 1,
+  "weekStart": ""
+}

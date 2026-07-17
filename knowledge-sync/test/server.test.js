@@ -40,6 +40,8 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
   const cleanups = [];
   let modifiedTime = '2026-01-01T00:00:00Z';
   let fileContent = 'primeira versão';
+  let driveRevision = 0;
+  let folderScans = 0;
   let uploadSequence = 0;
   let directorySequence = 0;
   let activeUploads = 0;
@@ -57,6 +59,18 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       response.end(JSON.stringify({ access_token: 'google-token', expires_in: 3600 }));
       return;
     }
+    if (url.pathname === '/drive/v3/changes/startPageToken') {
+      response.end(JSON.stringify({ startPageToken: String(driveRevision) }));
+      return;
+    }
+    if (url.pathname === '/drive/v3/changes') {
+      const changed = Number(url.searchParams.get('pageToken')) < driveRevision;
+      response.end(JSON.stringify({
+        changes: changed ? [{ fileId: 'file-A', file: { id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false } }] : [],
+        newStartPageToken: String(driveRevision)
+      }));
+      return;
+    }
     if (url.pathname === '/drive/v3/files/folder-A' || url.pathname === '/drive/v3/files/folder-B') {
       const id = url.pathname.endsWith('folder-B') ? 'folder-B' : 'folder-A';
       response.end(JSON.stringify({ id, name: id === 'folder-B' ? 'Pasta B' : 'Pasta A', mimeType: 'application/vnd.google-apps.folder', parents: [], trashed: false }));
@@ -67,6 +81,10 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       response.end(fileContent);
       return;
     }
+    if (url.pathname === '/drive/v3/files/file-A') {
+      response.end(JSON.stringify({ id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false }));
+      return;
+    }
     if (url.pathname === '/drive/v3/files/file-B' && url.searchParams.get('alt') === 'media') {
       response.setHeader('content-type', 'text/plain');
       response.end('arquivo da base B');
@@ -75,8 +93,10 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     if (url.pathname === '/drive/v3/files') {
       const query = url.searchParams.get('q') || '';
       if (query.includes("'folder-A' in parents")) {
+        folderScans += 1;
         response.end(JSON.stringify({ files: [{ id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false }] }));
       } else if (query.includes("'folder-B' in parents")) {
+        folderScans += 1;
         response.end(JSON.stringify({ files: [{ id: 'file-B', name: 'base-b.txt', mimeType: 'text/plain', modifiedTime: '2026-01-03T00:00:00Z', size: '17', parents: ['folder-B'], trashed: false }] }));
       } else {
         response.end(JSON.stringify({ files: [
@@ -241,9 +261,20 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     assert.equal(uploads.length, 1);
     assert.match(uploads[0], /"knowledge_id":"kb-A"/);
     assert.match(uploads[0], /manual\.txt/);
+    assert.match(uploads[0], /"source":"google-drive"/);
+    const managed = await fetch(`${workerUrl}/api/targets/kb-A/files`, { headers }).then(value => value.json());
+    assert.equal(managed.files.length, 1);
+    assert.equal(managed.files[0].status, 'indexed');
+    assert.equal(managed.files[0].filename, 'manual.txt');
+
+    response = await fetch(`${workerUrl}/api/targets/kb-A/files/${encodeURIComponent(managed.files[0].sourceKey)}/reprocess`, { method: 'POST', headers });
+    assert.equal(response.status, 202, await response.text());
+    for (let attempt = 0; attempt < 100 && uploads.length < 2; attempt += 1) await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(uploads.length, 2);
 
     modifiedTime = '2026-01-02T00:00:00Z';
     fileContent = 'segunda versão';
+    driveRevision += 1;
     response = await fetch(`${workerUrl}/api/targets/kb-A/run`, { method: 'POST', headers });
     assert.equal(response.status, 202);
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -251,8 +282,20 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       if (current.targets[0]?.lastRunSummary?.modified === 1 && !current.targets[0].running) break;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    assert.equal(uploads.length, 2);
-    assert.deepEqual(cleanups, [{ file_ids: ['uploaded-1'], dir_ids: [] }]);
+    assert.equal(uploads.length, 3);
+    assert.deepEqual(cleanups, [{ file_ids: ['uploaded-1'], dir_ids: [] }, { file_ids: ['uploaded-2'], dir_ids: [] }]);
+
+    const scansBeforeFastPath = folderScans;
+    const targetBeforeFastPath = await fetch(`${workerUrl}/api/targets`, { headers }).then(value => value.json());
+    response = await fetch(`${workerUrl}/api/targets/kb-A/run`, { method: 'POST', headers });
+    assert.equal(response.status, 202);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const current = await fetch(`${workerUrl}/api/targets`, { headers }).then(value => value.json());
+      if (current.targets[0]?.lastRunAt !== targetBeforeFastPath.targets[0].lastRunAt && !current.targets[0].running) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.equal(folderScans, scansBeforeFastPath, 'sem mudanças, a Changes API deve evitar nova varredura de pastas');
+    assert.equal(uploads.length, 3);
 
     response = await fetch(`${workerUrl}/api/targets/kb-B`, {
       method: 'PUT',
@@ -262,6 +305,7 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     assert.equal(response.status, 200, await response.text());
     modifiedTime = '2026-01-04T00:00:00Z';
     fileContent = 'terceira versão';
+    driveRevision += 1;
     maxConcurrentUploads = 0;
     const [runA, runB] = await Promise.all([
       fetch(`${workerUrl}/api/targets/kb-A/run`, { method: 'POST', headers }),
@@ -274,7 +318,7 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       if (current.targets.length === 2 && current.targets.every(target => target.lastRunStatus === 'completed' && !target.running)) break;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    assert.equal(uploads.length, 4);
+    assert.equal(uploads.length, 5);
     assert.equal(maxConcurrentUploads, 1, 'uploads de bases diferentes devem usar a fila sequencial');
   } catch (error) {
     error.message += `\nWorker output:\n${childOutput}`;

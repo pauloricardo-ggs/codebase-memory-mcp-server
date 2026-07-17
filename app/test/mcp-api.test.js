@@ -42,7 +42,7 @@ async function waitFor(url) {
 async function request(url, options = {}) {
   const response = await fetch(url, {
     ...options,
-    headers: { 'content-type': 'application/json', ...options.headers }
+    headers: { 'content-type': 'application/json', ...(request.adminCookie ? { cookie: request.adminCookie } : {}), ...options.headers }
   });
   const payload = await response.json();
   assert.equal(response.ok, true, JSON.stringify(payload));
@@ -102,7 +102,8 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   const appPort = await availablePort();
   const guardrailPort = await availablePort();
   const appDataDirectory = path.join(directory, 'data');
-  await mkdir(appDataDirectory, { recursive: true });
+  await mkdir(path.join(appDataDirectory, 'secrets'), { recursive: true });
+  await writeFile(path.join(appDataDirectory, 'secrets', 'admin-jwt-secret'), `${'a'.repeat(64)}\n`);
   await writeFile(path.join(appDataDirectory, 'state.json'), JSON.stringify({
     workspaces: [{ id: 'plataforma', name: 'Plataforma', updateSchedule: { enabled: false, cron: '0 * * * *', timezone: 'America/Maceio', lastRunAt: null, lastRunStatus: null }, createdAt: '2026-01-01T00:00:00.000Z' }],
     repositories: [
@@ -134,7 +135,8 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
       ...process.env,
       PORT: String(appPort),
       UI_PORT: '8787',
-      AGENTGATEWAY_UI_PORT: '8788',
+      ADMIN_AUTH_USERNAME: 'admin@example.com',
+      ADMIN_AUTH_PASSWORD: 'senha-segura',
       APP_DATA_DIR: appDataDirectory,
       CBM_ALLOWED_ROOT: path.join(directory, 'repositories'),
       AGENTGATEWAY_ADMIN_URL: `http://127.0.0.1:${gatewayPort}`,
@@ -153,6 +155,25 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
     }
   });
   await waitFor(`http://127.0.0.1:${appPort}/api/health`);
+  const unauthorizedApi = await fetch(`http://127.0.0.1:${appPort}/api/workspaces`);
+  assert.equal(unauthorizedApi.status, 401);
+  const unauthorizedPage = await fetch(`http://127.0.0.1:${appPort}/`, { redirect: 'manual' });
+  assert.equal(unauthorizedPage.status, 302);
+  assert.equal(unauthorizedPage.headers.get('location'), '/admin/login');
+  const rejectedLogin = await fetch(`http://127.0.0.1:${appPort}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'admin@example.com', password: 'incorreta' })
+  });
+  assert.equal(rejectedLogin.status, 401);
+  const login = await fetch(`http://127.0.0.1:${appPort}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'admin@example.com', password: 'senha-segura' })
+  });
+  assert.equal(login.status, 200);
+  request.adminCookie = login.headers.get('set-cookie').split(';')[0];
+  t.after(() => { request.adminCookie = ''; });
   const guardrail = guardrailClient(guardrailPort);
   t.after(() => guardrail.close());
 

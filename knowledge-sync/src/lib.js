@@ -228,12 +228,32 @@ export function migrateTargetSchedule(target, defaultTimezone = DEFAULT_TIMEZONE
 }
 
 export function publicTarget(target, running = false) {
-  const { files: _files, directories: _directories, ...visible } = target;
+  const { files: _files, directories: _directories, changePageToken: _changePageToken, scannedFolderIds: _scannedFolderIds, ...visible } = target;
+  const files = Object.values(target.files || {});
   return {
     ...visible,
-    managedFileCount: Object.keys(target.files || {}).length,
+    managedFileCount: files.length,
+    failedFileCount: files.filter(file => file.status === 'failed').length,
     running,
     scheduleDescription: describeCron(target.cron),
     nextRunAt: running ? null : nextRunAt(target)
   };
+}
+
+export function changesAffectTarget(target, changes) {
+  const knownFiles = new Set(Object.values(target.files || {}).map(file => file.driveFileId).filter(Boolean));
+  const knownFolders = new Set([...(target.scannedFolderIds || []), ...(target.folders || []).map(folder => folder.id)]);
+  return changes.some(change => {
+    if (knownFiles.has(change.fileId)) return true;
+    const file = change.file;
+    if (!file) return false;
+    if (knownFiles.has(file.id)) return true;
+    return (file.parents || []).some(parent => knownFolders.has(parent));
+  });
+}
+
+export function fullReconciliationDue(target, now = new Date(), intervalHours = 168) {
+  if (!target.lastFullScanAt) return true;
+  const elapsed = now.getTime() - new Date(target.lastFullScanAt).getTime();
+  return !Number.isFinite(elapsed) || elapsed >= intervalHours * 60 * 60 * 1000;
 }

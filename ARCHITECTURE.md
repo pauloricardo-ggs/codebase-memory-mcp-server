@@ -5,14 +5,13 @@ Este documento descreve os serviços, fluxos de dados, persistência e decisões
 ## Visão dos serviços
 
 ```text
-Clientes MCP
-    │
-    ▼
-Nginx ──► AgentGateway ──► Codebase Memory MCP
-   │              │
-   │              └── controle de tokens e projetos permitidos
-   ├──► painel administrativo
-   └──► explorador de grafos
+Navegador ──► Nginx ──┬──► /          Open WebUI
+                      ├──► /admin/    painel administrativo
+                      └──► /grafana/  Grafana
+
+Clientes MCP ──► Nginx /mcp ──► AgentGateway ──► Codebase Memory MCP
+                                      │
+                                      └── controle de tokens e projetos permitidos
 
 Google Drive ──► knowledge-sync ──► Open WebUI
                                          │
@@ -28,10 +27,9 @@ Google Drive ──► knowledge-sync ──► Open WebUI
 
 | Serviço | Responsabilidade |
 | --- | --- |
-| `proxy` | Publica as interfaces e o endpoint MCP. |
+| `proxy` | Único ponto de entrada; publica Open WebUI, painel, Grafana e MCP. |
 | `agentgateway` | Encaminha chamadas MCP e aplica as credenciais configuradas. |
 | `admin` | Gerencia workspaces, repositórios, usuários MCP e integração do Drive. |
-| `graph-ui` | Executa a interface de exploração do Codebase Memory. |
 | `open-webui` | Mantém chats, Knowledge Bases, arquivos, chunks e índice vetorial. |
 | `docling` | Converte documentos, executa OCR adaptativo e extrai tabelas. |
 | `ollama` | Executa o modelo de chat e o embedding `bge-m3`. |
@@ -110,6 +108,10 @@ O padrão é:
 
 O worker verifica agendas a cada 30 segundos, mas usa os slots do cron. Se estiver indisponível no instante exato, executa o último slot pendente ao voltar. Um slot persistido não é executado duas vezes.
 
+Depois da primeira varredura completa, o worker persiste um token da Google Drive Changes API. Execuções seguintes consultam mudanças primeiro e encerram sem percorrer a árvore quando nenhuma alteração afeta pastas ou arquivos conhecidos. Alterações relevantes disparam uma reconciliação completa. Uma reconciliação de segurança também ocorre periodicamente, por padrão a cada 168 horas.
+
+Falhas de download ou ingestão são isoladas por arquivo. O manifesto registra estado, erro, tentativa, sucesso e duração, permitindo repetir somente o documento afetado pelo painel. Erros 429 e 5xx do Drive e do Open WebUI usam retry com backoff exponencial.
+
 Todas as Knowledge Bases compartilham uma fila com concorrência global `1`. Vínculos vencidos são processados sequencialmente para limitar CPU, RAM e pressão sobre o Open WebUI. A ação **Sincronizar agora** entra na mesma fila.
 
 Estados antigos com `intervalMinutes` são migrados automaticamente. O intervalo legado de 60 minutos vira `30 * * * *`.
@@ -132,11 +134,28 @@ O backup mínimo deve incluir `data/`, `cache/`, `repositories/` quando os clone
 ## Segurança operacional
 
 - Não exponha Ollama, Docling ou `knowledge-sync` diretamente à rede pública.
+- Mantenha somente a porta do proxy publicada pelo Docker.
 - Publique o proxy atrás de HTTPS, VPN ou rede corporativa.
 - Use tokens MCP individuais quando o acesso não puder abranger todo o workspace.
 - Restrinja a Service Account do Drive a leitura das pastas necessárias.
 - Mantenha `data/`, `.env` e credenciais fora do Git.
 - Monitore RAM, VRAM, tempo dos lotes e latência do chat antes de aumentar workers ou batches.
+
+## Observabilidade
+
+O `admin` expõe liveness em `/api/health/live`, readiness agregado em `/api/health/ready`, detalhes em `/api/health/detail` e métricas Prometheus em `/api/metrics`. O worker expõe `/health/live`, `/health/ready` e `/metrics` na rede interna.
+
+O instalador habilita o profile Compose `monitoring`, que inicia Prometheus e Grafana junto com os demais serviços. Em instalações manuais, use:
+
+```bash
+docker compose --profile monitoring up -d prometheus grafana
+```
+
+Prometheus permanece exclusivamente na rede Docker e não possui rota no proxy. O Grafana é publicado em `/grafana/` e utiliza seu login próprio. Em produção, a infraestrutura externa deve terminar HTTPS e restringir a origem aos IPs corporativos.
+
+As métricas não usam perguntas, nomes de arquivo ou usuário como labels. Logs operacionais são JSON e utilizam IDs de operação, sem conteúdo documental ou credenciais.
+
+O Grafana provisiona automaticamente o datasource Prometheus e o dashboard versionado **Codebase Memory — Operação**. O dashboard provisionado não é editável; dashboards adicionais criados pelo usuário são preservados no volume `grafana-data`.
 
 ## Referências oficiais
 
