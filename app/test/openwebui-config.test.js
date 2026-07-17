@@ -72,13 +72,13 @@ test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e 
     readFile(path.join(root, 'nginx/nginx.conf'), 'utf8'),
     readFile(path.join(root, 'install.sh'), 'utf8')
   ]);
-  assert.match(compose, /ports:\n\s+- "\$\{UI_PORT:-8787\}:8080"/);
+  assert.match(compose, /ports:\n\s+- "\$\{UI_PORT:-8080\}:8080"/);
   assert.doesNotMatch(compose, /OPENWEBUI_PORT|PROMETHEUS_PORT|GRAFANA_PORT|AGENTGATEWAY_UI_PORT/);
   assert.doesNotMatch(compose, /^  graph-ui:/m);
   assert.match(compose, /open-webui:[\s\S]*?expose:\n\s+- "8080"/);
   assert.match(compose, /ADMIN_JWT_SECRET_FILE: \/data\/app\/secrets\/admin-jwt-secret/);
-  assert.match(compose, /WEBUI_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8787\}"/);
-  assert.match(compose, /GF_SERVER_ROOT_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8787\}\/grafana\/"/);
+  assert.match(compose, /WEBUI_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8080\}"/);
+  assert.match(compose, /GF_SERVER_ROOT_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8080\}\/grafana\/"/);
   assert.match(compose, /GF_SERVER_SERVE_FROM_SUB_PATH: "true"/);
   assert.match(nginx, /location \^~ \/grafana\//);
   assert.match(nginx, /set \$grafana_upstream http:\/\/grafana:3000/);
@@ -87,6 +87,9 @@ test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e 
   assert.match(nginx, /location \/ \{[\s\S]*proxy_pass http:\/\/open-webui:8080/);
   assert.match(nginx, /location \/admin\/ \{[\s\S]*proxy_pass http:\/\/admin:3000\//);
   assert.match(nginx, /location = \/mcp/);
+  assert.match(nginx, /location = \/admin\/api\/auth\/login \{[\s\S]*proxy_set_header X-Forwarded-Host \$http_host/);
+  assert.match(nginx, /location \/admin\/ \{[\s\S]*proxy_set_header X-Forwarded-Host \$http_host/);
+  assert.doesNotMatch(nginx, /proxy_set_header (?:Host|X-Forwarded-Host) \$host;/);
   assert.doesNotMatch(nginx, /auth_basic|mcp-panel|listen 8081/);
   assert.match(install, /PUBLIC_BASE_URL=%s/);
   assert.match(install, /ask_public_base_url/);
@@ -320,7 +323,7 @@ test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
     assert.match(environment, /^OLLAMA_RUNTIME=docker$/m);
     assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/ollama:11434$/m);
     assert.match(environment, /^COMPOSE_PROFILES=ollama-docker,monitoring$/m);
-    assert.match(environment, /^PUBLIC_BASE_URL=http:\/\/localhost:8787$/m);
+    assert.match(environment, /^PUBLIC_BASE_URL=http:\/\/localhost:8080$/m);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

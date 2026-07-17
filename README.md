@@ -35,15 +35,23 @@ chmod +x install.sh
 ./install.sh
 ```
 
-O instalador solicita:
+O instalador conduz uma configuração guiada em seis etapas, sempre exibindo o
+valor padrão ou a configuração atual:
 
 - orçamento de memória do Codebase Memory;
 - runtime e modelo do Ollama;
 - aceleração NVIDIA, quando disponível;
 - e-mail e senha administrativos;
-- URL pública, usando `http://localhost:8787` como padrão.
+- URL pública, usando `http://localhost:8080` como padrão.
 
-Ele cria `.env`, prepara diretórios e segredos, constrói os serviços, baixa o modelo de chat e o `bge-m3`, configura presets do Open WebUI e valida o endpoint MCP. Reinstalações preservam dados e configurações válidas.
+Antes de aplicar alterações, ele apresenta uma revisão completa e solicita a
+confirmação. A instalação é dividida em quatro fases visíveis: dependências,
+configuração local, serviços e verificações finais. Ao concluir, o resumo reúne
+os endereços de acesso e os próximos passos.
+
+O instalador cria `.env`, prepara diretórios e segredos, constrói os serviços,
+baixa o modelo de chat e o `bge-m3`, configura presets do Open WebUI e valida o
+endpoint MCP. Reinstalações preservam dados e configurações válidas.
 
 O Google Drive é configurado depois da instalação, pelo painel. Consulte [Configurar Google Drive](GOOGLE-DRIVE-CONFIG.md).
 
@@ -51,10 +59,10 @@ O Google Drive é configurado depois da instalação, pelo painel. Consulte [Con
 
 | Serviço | Endereço |
 | --- | --- |
-| Open WebUI | `http://<servidor>:8787/` |
-| Painel administrativo | `http://<servidor>:8787/admin/` |
-| Endpoint MCP | `http://<servidor>:8787/mcp` |
-| Grafana | `http://<servidor>:8787/grafana/` |
+| Open WebUI | `http://<servidor>:8080/` |
+| Painel administrativo | `http://<servidor>:8080/admin/` |
+| Endpoint MCP | `http://<servidor>:8080/mcp` |
+| Grafana | `http://<servidor>:8080/grafana/` |
 
 O Open WebUI e o Grafana usam seus próprios logins. O painel administrativo possui sessão JWT própria, limitada a `/admin`, e `/mcp` usa tokens MCP individuais. Somente a porta do proxy é publicada; Prometheus e os demais backends permanecem na rede Docker.
 O dashboard provisionado **Codebase Memory — Operação** é aberto como página inicial e acompanha saúde, sincronizações, arquivos, jobs, erros externos, latência e memória.
@@ -75,7 +83,7 @@ O token GitHub precisa de leitura de metadados e, para repositórios privados, l
 O endpoint usa Streamable HTTP e Bearer token:
 
 ```text
-http://<servidor>:8787/mcp
+http://<servidor>:8080/mcp
 ```
 
 Exemplo para Codex em `~/.codex/config.toml`:
@@ -85,7 +93,7 @@ Exemplo para Codex em `~/.codex/config.toml`:
 enabled = true
 startup_timeout_sec = 30
 tool_timeout_sec = 120
-url = "http://<servidor>:8787/mcp"
+url = "http://<servidor>:8080/mcp"
 
 [mcp_servers.codebase_memory.http_headers]
 Authorization = "Bearer <SEU_TOKEN>"

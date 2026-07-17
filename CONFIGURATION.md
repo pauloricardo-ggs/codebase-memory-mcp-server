@@ -11,8 +11,8 @@ CBM_MEM_BUDGET_MB=8192
 CBM_HOST_BIN=/home/usuario/.local/bin/codebase-memory-mcp
 LOCAL_UID=1000
 LOCAL_GID=1000
-UI_PORT=8787
-PUBLIC_BASE_URL=http://localhost:8787
+UI_PORT=8080
+PUBLIC_BASE_URL=http://localhost:8080
 WORKSPACE_TIMEZONE=America/Maceio
 REPOSITORY_SYNC_CONCURRENCY=3
 OLLAMA_VERSION=0.32.1
@@ -83,9 +83,9 @@ docker compose logs --tail=200 docling open-webui knowledge-sync
 docker compose restart docling
 ```
 
-Prometheus e Grafana fazem parte do profile `monitoring`, habilitado pelo instalador em `COMPOSE_PROFILES`. Prometheus não possui porta no host; o Grafana é acessado exclusivamente em `http://localhost:8787/grafana/` ou `http://<servidor>:8787/grafana/` pelo proxy e usa sua própria tela de login. A credencial inicial fica armazenada com permissão `0600` em `data/secrets/monitoring.env`.
+Prometheus e Grafana fazem parte do profile `monitoring`, habilitado pelo instalador em `COMPOSE_PROFILES`. Prometheus não possui porta no host; o Grafana é acessado exclusivamente em `http://localhost:8080/grafana/` ou `http://<servidor>:8080/grafana/` pelo proxy e usa sua própria tela de login. A credencial inicial fica armazenada com permissão `0600` em `data/secrets/monitoring.env`.
 
-O instalador solicita a URL pública e usa `http://localhost:8787` como padrão. Em produção, informe `https://seu-dominio` — sem barra final e sem `/grafana`. As URLs passam a ser derivadas automaticamente:
+O instalador solicita a URL pública e usa `http://localhost:8080` como padrão. Em produção, informe `https://seu-dominio` — sem barra final e sem `/grafana`. As URLs passam a ser derivadas automaticamente:
 
 ```text
 https://seu-dominio/          Open WebUI

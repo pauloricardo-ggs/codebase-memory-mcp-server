@@ -78,7 +78,7 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   let gatewayConfig = {
     config: { adminAddr: '0.0.0.0:15000' },
     mcp: {
-      port: 8787,
+      port: 8080,
       policies: { cors: { allowOrigins: ['*'] } },
       targets: [{ name: 'codebase-memory', stdio: { cmd: '/bin/example' } }]
     }
@@ -134,7 +134,7 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
     env: {
       ...process.env,
       PORT: String(appPort),
-      UI_PORT: '8787',
+      UI_PORT: '8080',
       ADMIN_AUTH_USERNAME: 'admin@example.com',
       ADMIN_AUTH_PASSWORD: 'senha-segura',
       APP_DATA_DIR: appDataDirectory,

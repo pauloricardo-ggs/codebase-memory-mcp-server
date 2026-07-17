@@ -43,16 +43,20 @@ SYSTEM_PLATFORM=''
 SYSTEM_ARCHITECTURE="$(uname -m)"
 BREW_BIN=''
 OLLAMA_BIN=''
+ACTIVE_PHASE='Preparação'
+CONFIG_TOTAL_STEPS=6
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
+  COLOR_CYAN='\033[0;36m'
   COLOR_GREEN='\033[0;32m'
   COLOR_RED='\033[0;31m'
   COLOR_YELLOW='\033[0;33m'
+  COLOR_MUTED='\033[0;90m'
   COLOR_BOLD='\033[1m'
   COLOR_RESET='\033[0m'
 else
-  COLOR_BLUE='' COLOR_GREEN='' COLOR_RED='' COLOR_YELLOW='' COLOR_BOLD='' COLOR_RESET=''
+  COLOR_BLUE='' COLOR_CYAN='' COLOR_GREEN='' COLOR_RED='' COLOR_YELLOW='' COLOR_MUTED='' COLOR_BOLD='' COLOR_RESET=''
 fi
 
 info() { printf "${COLOR_BLUE}ℹ${COLOR_RESET}  %s\n" "$*"; }
@@ -60,8 +64,52 @@ success() { printf "${COLOR_GREEN}✔${COLOR_RESET}  %s\n" "$*"; }
 warn() { printf "${COLOR_YELLOW}⚠${COLOR_RESET}  %s\n" "$*"; }
 fail() { printf "${COLOR_RED}✖  %s${COLOR_RESET}\n" "$*" >&2; exit 1; }
 
+print_rule() {
+  printf "${COLOR_MUTED}────────────────────────────────────────────────────────────${COLOR_RESET}\n"
+}
+
+show_welcome() {
+  printf '\n'
+  printf "${COLOR_CYAN}${COLOR_BOLD}  CODEBASE MEMORY${COLOR_RESET}\n"
+  printf "${COLOR_BOLD}  Instalador do ambiente MCP${COLOR_RESET}\n"
+  printf "${COLOR_MUTED}  Configuração guiada · %s${COLOR_RESET}\n\n" "$CBM_VERSION"
+  print_rule
+  printf '  Este assistente validará o sistema, coletará 6 configurações\n'
+  printf '  e instalará todos os serviços. Seus dados são preservados\n'
+  printf '  caso esta seja uma reinstalação.\n'
+  print_rule
+}
+
+show_config_step() {
+  local number="$1" title="$2" description="$3"
+  ACTIVE_PHASE="Configuração — ${title}"
+  printf "\n${COLOR_CYAN}${COLOR_BOLD}ETAPA %s DE %s${COLOR_RESET}  ${COLOR_MUTED}Configuração${COLOR_RESET}\n" "$number" "$CONFIG_TOTAL_STEPS"
+  printf "${COLOR_BOLD}%s${COLOR_RESET}\n" "$title"
+  printf "${COLOR_MUTED}%s${COLOR_RESET}\n\n" "$description"
+}
+
+show_install_phase() {
+  local number="$1" title="$2" description="$3"
+  ACTIVE_PHASE="$title"
+  printf "\n${COLOR_CYAN}${COLOR_BOLD}FASE %s DE 4${COLOR_RESET}  ${COLOR_BOLD}%s${COLOR_RESET}\n" "$number" "$title"
+  printf "${COLOR_MUTED}%s${COLOR_RESET}\n" "$description"
+  print_rule
+}
+
+print_option() {
+  local key="$1" label="$2" description="$3"
+  printf "  ${COLOR_CYAN}${COLOR_BOLD}%s${COLOR_RESET}  %-24s ${COLOR_MUTED}%s${COLOR_RESET}\n" "$key" "$label" "$description"
+}
+
+prompt_value() {
+  local label="$1"
+  printf "${COLOR_CYAN}›${COLOR_RESET} ${COLOR_BOLD}%s${COLOR_RESET} " "$label" >&2
+}
+
 on_error() {
-  printf "\n${COLOR_RED}✖  A instalação falhou na linha %s.${COLOR_RESET}\n" "$1" >&2
+  printf "\n${COLOR_RED}${COLOR_BOLD}✖ Não foi possível concluir: %s${COLOR_RESET}\n" "$ACTIVE_PHASE" >&2
+  printf "  A falha ocorreu na linha %s. Revise os detalhes acima e execute\n" "$1" >&2
+  printf "  o instalador novamente; configurações e dados existentes serão preservados.\n" >&2
 }
 trap 'on_error "$LINENO"' ERR
 
@@ -407,26 +455,41 @@ configure_nvidia_runtime_command() {
 }
 
 ask_memory_budget() {
-  local choice custom_value
+  local choice custom_value existing_budget default_choice
+  existing_budget="$(read_existing_environment_value CBM_MEM_BUDGET_MB)"
+  [[ "$existing_budget" =~ ^[1-9][0-9]*$ ]] || existing_budget='8192'
 
-  printf "\n${COLOR_BOLD}Orçamento de memória${COLOR_RESET}\n"
-  printf 'Quanto de RAM o Codebase Memory poderá utilizar?\n\n'
-  printf '  1) 4 GB   (4096 MB)\n'
-  printf '  2) 8 GB   (8192 MB)\n'
-  printf '  3) 16 GB  (16384 MB)\n'
-  printf '  4) 32 GB  (32768 MB)\n'
-  printf '  5) Outro valor em MB\n\n'
+  case "$existing_budget" in
+    4096) default_choice=1 ;;
+    8192) default_choice=2 ;;
+    16384) default_choice=3 ;;
+    32768) default_choice=4 ;;
+    *) default_choice=5 ;;
+  esac
+
+  show_config_step 1 'Memória disponível' 'Defina quanto de RAM o Codebase Memory pode usar durante a indexação.'
+  printf "${COLOR_MUTED}Os demais serviços também consomem memória. Recomendamos reservar\n"
+  printf "aproximadamente metade da RAM da máquina para o Codebase Memory.${COLOR_RESET}\n\n"
+  print_option 1 '4 GB' 'Para máquinas com 8 GB de RAM'
+  print_option 2 '8 GB' 'Recomendado para máquinas com 16 GB'
+  print_option 3 '16 GB' 'Recomendado para máquinas com 32 GB'
+  print_option 4 '32 GB' 'Recomendado para máquinas com 64 GB ou mais'
+  print_option 5 'Valor personalizado' 'Informe o limite em MB'
+  printf '\n'
 
   while true; do
-    read -r -p 'Escolha [1-5]: ' choice
-    case "$choice" in
+    prompt_value "Escolha [1-5] (padrão: ${default_choice}):"
+    read -r choice
+    case "${choice:-$default_choice}" in
       1) CBM_MEM_BUDGET_MB=4096; break ;;
       2) CBM_MEM_BUDGET_MB=8192; break ;;
       3) CBM_MEM_BUDGET_MB=16384; break ;;
       4) CBM_MEM_BUDGET_MB=32768; break ;;
       5)
         while true; do
-          read -r -p 'Informe o valor inteiro em MB: ' custom_value
+          prompt_value "Memória em MB (atual: ${existing_budget}):"
+          read -r custom_value
+          custom_value="${custom_value:-$existing_budget}"
           if [[ "$custom_value" =~ ^[1-9][0-9]*$ ]]; then
             CBM_MEM_BUDGET_MB="$custom_value"
             break 2
@@ -438,7 +501,7 @@ ask_memory_budget() {
     esac
   done
 
-  success "Budget definido em ${CBM_MEM_BUDGET_MB} MB"
+  success "Limite de memória definido em ${CBM_MEM_BUDGET_MB} MB"
 }
 
 ask_ollama_runtime() {
@@ -453,14 +516,19 @@ ask_ollama_runtime() {
     OLLAMA_RUNTIME='docker'
   fi
 
-  printf "\n${COLOR_BOLD}Modo de execução do Ollama${COLOR_RESET}\n"
-  printf 'Onde o Ollama deve ser executado?\n\n'
-  printf '  1) Docker (padrão para Linux)\n'
-  printf '  2) Host macOS (Homebrew; Apple Silicon usa aceleração nativa)\n\n'
+  show_config_step 2 'Execução do Ollama' 'Escolha onde o modelo local será executado.'
+  print_option 1 'Docker' 'Isolado e recomendado no Linux'
+  if [[ "$SYSTEM_PLATFORM" == macos ]]; then
+    print_option 2 'Host macOS' 'Homebrew e aceleração nativa no Apple Silicon'
+  else
+    print_option 2 'Host macOS' 'Disponível somente no macOS'
+  fi
+  printf '\n'
 
   [[ "$OLLAMA_RUNTIME" == host ]] && default_choice=2 || default_choice=1
   while true; do
-    read -r -p "Escolha [1-2, atual: ${default_choice}]: " choice
+    prompt_value "Escolha [1-2] (padrão: ${default_choice}):"
+    read -r choice
     case "${choice:-$default_choice}" in
       1)
         OLLAMA_RUNTIME='docker'
@@ -494,14 +562,15 @@ ask_ollama_model() {
   existing_model="$(read_existing_environment_value OLLAMA_CHAT_MODEL)"
   OLLAMA_CHAT_MODEL="${existing_model:-gemma4:e2b}"
 
-  printf "\n${COLOR_BOLD}Modelo local do Ollama${COLOR_RESET}\n"
-  printf 'Qual modelo de chat deve ser baixado durante a instalação?\n\n'
-  printf '  1) gemma4:e2b (Gemma 4 Effective 2B)\n'
-  printf '  2) gemma4:e4b (Gemma 4 Effective 4B)\n'
-  printf '  3) Outro modelo do Ollama\n\n'
+  show_config_step 3 'Modelo de linguagem' 'Selecione o modelo de chat que será baixado pelo Ollama.'
+  print_option 1 'gemma4:e2b' 'Mais leve e rápido'
+  print_option 2 'gemma4:e4b (Gemma 4 Effective 4B)' 'Mais capacidade e maior consumo de recursos'
+  print_option 3 'Outro modelo' 'Use um identificador disponível no Ollama'
+  printf '\n'
 
   while true; do
-    read -r -p "Escolha [1-3, atual: ${OLLAMA_CHAT_MODEL}]: " choice
+    prompt_value "Escolha [1-3] (atual: ${OLLAMA_CHAT_MODEL}):"
+    read -r choice
     if [[ -z "$choice" ]]; then
       break
     fi
@@ -509,7 +578,8 @@ ask_ollama_model() {
       1) OLLAMA_CHAT_MODEL='gemma4:e2b'; break ;;
       2) OLLAMA_CHAT_MODEL='gemma4:e4b'; break ;;
       3)
-        read -r -p 'Informe o identificador do modelo (ex.: gemma4:12b): ' custom_model
+        prompt_value 'Identificador do modelo (ex.: gemma4:12b):'
+        read -r custom_model
         if [[ "$custom_model" =~ ^[A-Za-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]]; then
           OLLAMA_CHAT_MODEL="$custom_model"
           break
@@ -530,6 +600,8 @@ ask_ollama_gpu() {
   existing_devices="$(read_existing_environment_value OLLAMA_GPU_DEVICE_IDS)"
   OLLAMA_GPU_MODE='cpu'
   OLLAMA_GPU_DEVICE_IDS=''
+
+  show_config_step 4 'Aceleração de hardware' 'O instalador detectará automaticamente os recursos disponíveis.'
 
   if [[ "$OLLAMA_RUNTIME" == host ]]; then
     if [[ "$SYSTEM_ARCHITECTURE" == arm64 || "$SYSTEM_ARCHITECTURE" == aarch64 ]]; then
@@ -554,8 +626,7 @@ ask_ollama_gpu() {
     return
   fi
 
-  printf "\n${COLOR_BOLD}Aceleração do Ollama${COLOR_RESET}\n"
-  printf 'GPUs NVIDIA detectadas:\n\n'
+  printf "${COLOR_BOLD}GPUs NVIDIA detectadas${COLOR_RESET}\n\n"
   for record in "${gpu_records[@]}"; do
     IFS=',' read -r index uuid name memory <<<"$record"
     index="${index//[[:space:]]/}"
@@ -569,9 +640,11 @@ ask_ollama_gpu() {
     fi
     printf '  GPU %s — %s — %s MiB — %s\n' "$index" "$name" "$memory" "$uuid"
   done
-  printf '\n  1) Usar todas as GPUs\n'
-  printf '  2) Selecionar GPUs\n'
-  printf '  3) Usar somente CPU\n\n'
+  printf '\n'
+  print_option 1 'Todas as GPUs' 'Maior capacidade disponível'
+  print_option 2 'Selecionar GPUs' 'Controle quais dispositivos serão usados'
+  print_option 3 'Somente CPU' 'Não disponibilizar GPUs ao Ollama'
+  printf '\n'
 
   case "$existing_mode" in
     all) default_choice=1 ;;
@@ -579,7 +652,8 @@ ask_ollama_gpu() {
     *) default_choice=3 ;;
   esac
   while true; do
-    read -r -p "Escolha [1-3, atual: ${default_choice}]: " choice
+    prompt_value "Escolha [1-3] (padrão: ${default_choice}):"
+    read -r choice
     case "${choice:-$default_choice}" in
       1)
         OLLAMA_GPU_MODE='all'
@@ -587,7 +661,8 @@ ask_ollama_gpu() {
         break
         ;;
       2)
-        read -r -p "Informe os índices separados por vírgula${existing_indices:+ [atual: ${existing_indices}]}: " selection
+        prompt_value "Índices separados por vírgula${existing_indices:+ (atual: ${existing_indices})}:"
+        read -r selection
         selection="${selection:-$existing_indices}"
         selected_ids=''
         IFS=',' read -ra requested_indices <<<"$selection"
@@ -650,9 +725,11 @@ ask_proxy_access() {
   suggested_email="${OPENWEBUI_PREVIOUS_EMAIL:-$(read_existing_environment_value ADMIN_EMAIL)}"
   [[ "$suggested_email" == *@*.* ]] || suggested_email='joao@exemplo.com'
 
-  printf "\n${COLOR_BOLD}Acesso ao painel${COLOR_RESET}\n"
+  show_config_step 5 'Acesso administrativo' 'Esta credencial será usada no painel, no Open WebUI e no Grafana.'
+  printf "${COLOR_MUTED}A senha não será exibida durante a digitação.${COLOR_RESET}\n\n"
   while true; do
-    read -r -p "E-mail administrativo [${suggested_email}]: " input
+    prompt_value "E-mail administrativo (padrão: ${suggested_email}):"
+    read -r input
     ADMIN_EMAIL="${input:-$suggested_email}"
     if [[ "$ADMIN_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
       break
@@ -663,11 +740,13 @@ ask_proxy_access() {
 
   while true; do
     if [[ -s "${DATA_DIR}/secrets/openwebui.env" && "$ADMIN_EMAIL" == "$OPENWEBUI_PREVIOUS_EMAIL" ]]; then
-      read -r -s -p 'Nova senha (deixe vazia para manter a atual): ' ADMIN_PASSWORD
+      prompt_value 'Nova senha (Enter mantém a senha atual):'
+      read -r -s ADMIN_PASSWORD
       printf '\n'
       [[ -z "$ADMIN_PASSWORD" ]] && break
     else
-      read -r -s -p 'Senha administrativa (mínimo de 6 caracteres): ' ADMIN_PASSWORD
+      prompt_value 'Senha administrativa (mínimo de 6 caracteres):'
+      read -r -s ADMIN_PASSWORD
       printf '\n'
     fi
 
@@ -675,7 +754,8 @@ ask_proxy_access() {
       warn "A senha precisa ter pelo menos 6 caracteres."
       continue
     fi
-    read -r -s -p 'Confirme a senha: ' password_confirmation
+    prompt_value 'Confirme a senha:'
+    read -r -s password_confirmation
     printf '\n'
     if [[ "$ADMIN_PASSWORD" == "$password_confirmation" ]]; then
       break
@@ -701,12 +781,14 @@ ask_public_base_url() {
     [[ "$legacy_grafana_url" == */grafana/ ]] && suggested="${legacy_grafana_url%/grafana/}"
   fi
   suggested="${suggested%/}"
-  suggested="${suggested:-http://localhost:8787}"
+  suggested="${suggested:-http://localhost:8080}"
 
-  printf "\n${COLOR_BOLD}URL pública${COLOR_RESET}\n"
-  printf 'Use a origem externa sem caminho; /admin, /grafana e /mcp serão derivados automaticamente.\n'
+  show_config_step 6 'Endereço público' 'Informe a origem usada para acessar os serviços pelo navegador e por clientes MCP.'
+  printf "${COLOR_MUTED}Use somente protocolo, domínio e porta. Os caminhos /admin, /grafana\n"
+  printf "e /mcp serão adicionados automaticamente.${COLOR_RESET}\n\n"
   while true; do
-    read -r -p "URL base [${suggested}]: " input
+    prompt_value "URL base (padrão: ${suggested}):"
+    read -r input
     input="${input:-$suggested}"
     input="${input%/}"
     if [[ "$input" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]]; then
@@ -725,6 +807,40 @@ ask_public_base_url() {
     warn 'Informe uma URL HTTP ou HTTPS sem caminho, consulta ou fragmento.'
   done
   success "URL pública configurada como ${PUBLIC_BASE_URL}"
+}
+
+confirm_configuration() {
+  local answer ollama_execution ollama_acceleration
+  [[ "$OLLAMA_RUNTIME" == host ]] && ollama_execution='Host macOS' || ollama_execution='Docker'
+  case "$OLLAMA_GPU_MODE" in
+    all) ollama_acceleration='Todas as GPUs NVIDIA' ;;
+    selected) ollama_acceleration="GPUs ${OLLAMA_GPU_DEVICE_IDS}" ;;
+    metal) ollama_acceleration='Apple Metal' ;;
+    *) ollama_acceleration='CPU' ;;
+  esac
+
+  ACTIVE_PHASE='Revisão da configuração'
+  printf "\n${COLOR_CYAN}${COLOR_BOLD}REVISÃO${COLOR_RESET}  ${COLOR_MUTED}Confira antes de continuar${COLOR_RESET}\n"
+  print_rule
+  printf '  Memória        %s MB\n' "$CBM_MEM_BUDGET_MB"
+  printf '  Ollama         %s\n' "$ollama_execution"
+  printf '  Modelo         %s\n' "$OLLAMA_CHAT_MODEL"
+  printf '  Aceleração     %s\n' "$ollama_acceleration"
+  printf '  Administrador  %s\n' "$ADMIN_EMAIL"
+  printf '  URL pública    %s\n' "$PUBLIC_BASE_URL"
+  print_rule
+  printf "${COLOR_MUTED}A partir daqui, o instalador poderá solicitar sua senha do sudo e\n"
+  printf "seguirá sem novas perguntas.${COLOR_RESET}\n\n"
+
+  while true; do
+    prompt_value 'Iniciar a instalação? [S/n]:'
+    read -r answer
+    case "${answer:-s}" in
+      s|S|sim|SIM|Sim) return 0 ;;
+      n|N|nao|NAO|Nao|não|NÃO|Não) return 1 ;;
+      *) warn 'Responda S para continuar ou N para cancelar.' ;;
+    esac
+  done
 }
 
 create_local_structure() {
@@ -868,7 +984,7 @@ write_openwebui_environment() {
 }
 
 create_environment_file() {
-  local temporary_file="${ENV_FILE}.tmp" ui_port=8787 public_base_url="${PUBLIC_BASE_URL:-}" workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value compose_profiles legacy_grafana_url
+  local temporary_file="${ENV_FILE}.tmp" ui_port=8080 public_base_url="${PUBLIC_BASE_URL:-}" workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value compose_profiles legacy_grafana_url
   if [[ -f "$ENV_FILE" ]]; then
     existing_value="$(sed -n 's/^OLLAMA_VERSION=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[A-Za-z0-9._-]+$ ]] && OLLAMA_VERSION="$existing_value"
@@ -1341,44 +1457,54 @@ show_summary() {
     *) ollama_acceleration='CPU' ;;
   esac
   [[ "$OLLAMA_RUNTIME" == host ]] && ollama_execution='host macOS' || ollama_execution='Docker'
-  printf "\n${COLOR_GREEN}${COLOR_BOLD}✔ Instalação concluída${COLOR_RESET}\n\n"
-  printf '  Repositórios : %s\n' "$REPOSITORIES_DIR"
-  printf '  Cache        : %s\n' "$CACHE_DIR"
-  printf '  Ambiente     : %s\n' "$ENV_FILE"
-  printf '  Budget       : %s MB\n' "$CBM_MEM_BUDGET_MB"
-  printf '  Executável   : %s\n' "$CBM_BIN"
-  printf '  E-mail admin : %s\n' "$ADMIN_EMAIL"
-  printf '  Modelo Ollama: %s\n' "$OLLAMA_CHAT_MODEL"
-  printf '  Execução     : %s\n' "$ollama_execution"
-  printf '  Aceleração   : %s\n' "$ollama_acceleration"
-  printf '\nConfiguração: auto_index=false, auto_watch=true\n'
-  printf '\nOpen WebUI:\n  %s/\n' "$public_base_url"
-  printf '\nPainel administrativo com login próprio:\n  %s/admin/\n' "$public_base_url"
-  printf '\nGrafana com login próprio:\n  %s/grafana/\n' "$public_base_url"
-  printf '\nEndpoint MCP remoto:\n  %s/mcp\n\n' "$public_base_url"
-  printf 'Prometheus, AgentGateway Admin, Ollama, Docling e workers: somente rede interna.\n\n'
-  printf 'Google Drive  : configure em Bases e Drive no painel administrativo.\n\n'
+  ACTIVE_PHASE='Concluído'
+  printf "\n${COLOR_GREEN}${COLOR_BOLD}✔ AMBIENTE PRONTO${COLOR_RESET}\n"
+  printf "${COLOR_MUTED}Todos os serviços foram instalados e validados com sucesso.${COLOR_RESET}\n"
+  print_rule
+  printf "\n${COLOR_BOLD}ACESSOS${COLOR_RESET}\n"
+  printf '  Open WebUI            %s/\n' "$public_base_url"
+  printf '  Painel administrativo %s/admin/\n' "$public_base_url"
+  printf '  Grafana               %s/grafana/\n' "$public_base_url"
+  printf '  Endpoint MCP          %s/mcp\n' "$public_base_url"
+  printf "\n${COLOR_BOLD}CONFIGURAÇÃO${COLOR_RESET}\n"
+  printf '  Administrador         %s\n' "$ADMIN_EMAIL"
+  printf '  Ollama                %s · %s · %s\n' "$OLLAMA_CHAT_MODEL" "$ollama_execution" "$ollama_acceleration"
+  printf '  Memória               %s MB\n' "$CBM_MEM_BUDGET_MB"
+  printf '  Repositórios          %s\n' "$REPOSITORIES_DIR"
+  printf '  Arquivo de ambiente   %s\n' "$ENV_FILE"
+  printf "\n${COLOR_BOLD}PRÓXIMOS PASSOS${COLOR_RESET}\n"
+  printf '  1. Entre no painel administrativo com %s.\n' "$ADMIN_EMAIL"
+  printf '  2. Conecte seu token do GitHub e adicione os repositórios.\n'
+  printf '  3. Configure o Google Drive em Bases e Drive, se necessário.\n'
 }
 
 main() {
-  printf "\n${COLOR_BOLD}Codebase Memory MCP Server — instalação${COLOR_RESET}\n\n"
+  show_welcome
   require_supported_system
-  printf "${COLOR_BOLD}Configuração inicial${COLOR_RESET}\n"
-  info "Responda agora às perguntas necessárias. Depois disso, a instalação seguirá sem interrupções."
+  success "Sistema compatível detectado: ${SYSTEM_PLATFORM} (${SYSTEM_ARCHITECTURE})"
+  info 'Pressione Enter para aceitar o valor padrão exibido em cada etapa.'
   ask_memory_budget
   ask_ollama_runtime
   ask_ollama_model
   ask_ollama_gpu
   ask_proxy_access
   ask_public_base_url
+
+  if ! confirm_configuration; then
+    printf "\n${COLOR_YELLOW}Instalação cancelada.${COLOR_RESET} Nenhuma alteração foi aplicada.\n\n"
+    return 0
+  fi
+
+  show_install_phase 1 'Sistema e dependências' 'Validando permissões e preparando Docker e ferramentas do host.'
   validate_sudo
   keep_sudo_alive
-  success "Configuração concluída; iniciando instalação não interativa"
   install_dependencies
   install_host_ollama
   if [[ "$OLLAMA_RUNTIME" == docker && "$OLLAMA_GPU_MODE" != cpu ]]; then
     run_step "Configurando o runtime NVIDIA no Docker" configure_nvidia_runtime_command
   fi
+
+  show_install_phase 2 'Configuração local' 'Preparando diretórios, segredos, binários e variáveis do ambiente.'
   create_local_structure
   write_ollama_gpu_compose_override
   configure_google_drive_sync
@@ -1388,11 +1514,15 @@ main() {
   create_environment_file
   run_step "Aplicando configurações do Codebase Memory" configure_codebase_memory_command
   run_step "Validando a instalação" validate_installation_command
+
+  show_install_phase 3 'Serviços' 'Construindo containers e iniciando os componentes da plataforma.'
   run_step "Construindo e iniciando o painel administrativo" start_admin_panel_command
   if [[ "$OLLAMA_RUNTIME" == docker && "$OLLAMA_GPU_MODE" != cpu ]]; then
     run_step "Validando o acesso do Ollama às GPUs" validate_ollama_gpu_command
   fi
   run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
+
+  show_install_phase 4 'Verificações finais' 'Testando integrações, modelos, monitoramento e workers.'
   run_step "Validando o AgentGateway e o endpoint MCP" validate_agentgateway_command
   run_step "Baixando modelos e configurando o Open WebUI" validate_openwebui_command
   run_step "Validando Prometheus e Grafana" validate_monitoring_command

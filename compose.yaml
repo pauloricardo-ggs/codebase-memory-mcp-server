@@ -6,7 +6,7 @@ services:
     user: "${LOCAL_UID}:${LOCAL_GID}"
     restart: "no"
     environment:
-      UI_PORT: "${UI_PORT:-8787}"
+      UI_PORT: "${UI_PORT:-8080}"
     volumes:
       - ./data/agentgateway:/config
       - ./data/secrets:/secrets
@@ -27,7 +27,7 @@ services:
         condition: service_completed_successfully
     command: ["-f", "/config/config.yaml"]
     environment:
-      UI_PORT: "${UI_PORT:-8787}"
+      UI_PORT: "${UI_PORT:-8080}"
       CBM_ALLOWED_ROOT: /data/repositories
       CBM_CACHE_DIR: /data/cache
       CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
@@ -37,7 +37,7 @@ services:
       - ./cache:/data/cache
       - ${CBM_HOST_BIN}:/usr/local/bin/codebase-memory-mcp:ro
     expose:
-      - "${UI_PORT:-8787}"
+      - "${UI_PORT:-8080}"
       - "15000"
 
   agentgateway-ready:
@@ -47,7 +47,7 @@ services:
       agentgateway:
         condition: service_started
     environment:
-      UI_PORT: "${UI_PORT:-8787}"
+      UI_PORT: "${UI_PORT:-8080}"
     volumes:
       - ./agentgateway/wait-ready.sh:/usr/local/bin/wait-agentgateway:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/wait-agentgateway"]
@@ -71,7 +71,7 @@ services:
       CBM_CACHE_DIR: /data/cache
       CBM_MEM_BUDGET_MB: "${CBM_MEM_BUDGET_MB}"
       CBM_BIN: /usr/local/bin/codebase-memory-mcp
-      UI_PORT: "${UI_PORT:-8787}"
+      UI_PORT: "${UI_PORT:-8080}"
       ADMIN_JWT_SECRET_FILE: /data/app/secrets/admin-jwt-secret
       WORKSPACE_TIMEZONE: "${WORKSPACE_TIMEZONE:-America/Maceio}"
       REPOSITORY_SYNC_CONCURRENCY: "${REPOSITORY_SYNC_CONCURRENCY:-3}"
@@ -104,7 +104,7 @@ services:
     command:
       - "envsubst '$$UI_PORT' < /etc/nginx/nginx.conf.template > /tmp/nginx.conf && exec nginx -c /tmp/nginx.conf -g 'daemon off;'"
     environment:
-      UI_PORT: "${UI_PORT:-8787}"
+      UI_PORT: "${UI_PORT:-8080}"
     depends_on:
       agentgateway-ready:
         condition: service_completed_successfully
@@ -115,7 +115,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf.template:ro
     ports:
-      - "${UI_PORT:-8787}:8080"
+      - "${UI_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -173,7 +173,7 @@ services:
     env_file:
       - ./data/secrets/openwebui.env
     environment:
-      WEBUI_URL: "${PUBLIC_BASE_URL:-http://localhost:8787}"
+      WEBUI_URL: "${PUBLIC_BASE_URL:-http://localhost:8080}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
       RAG_EMBEDDING_ENGINE: ollama
       RAG_EMBEDDING_MODEL: bge-m3
@@ -282,7 +282,7 @@ services:
         required: false
     environment:
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: "${PUBLIC_BASE_URL:-http://localhost:8787}/grafana/"
+      GF_SERVER_ROOT_URL: "${PUBLIC_BASE_URL:-http://localhost:8080}/grafana/"
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/codebase-memory-operation.json
     volumes:

@@ -66,7 +66,7 @@ Sem credencial, o worker responde ao painel, mas não consulta o Google nem exec
 <details>
 <summary style="font-size: 1.5em; font-weight: bold;">Enviar a Service Account pelo painel</summary>
 
-1. Em qualquer computador com acesso ao servidor, abra `http://<servidor>:8787/admin/`.
+1. Em qualquer computador com acesso ao servidor, abra `http://<servidor>:8080/admin/`.
 2. Entre em **Bases e Drive**.
 3. Clique em **Configurar Google Drive**.
 4. Use **Arquivo da Service Account** para selecionar o JSON baixado do Google Cloud. Como alternativa avançada, abra **Ou cole o conteúdo do JSON**.
@@ -129,7 +129,7 @@ O Picker permite que usuários importem arquivos manualmente pelo menu de anexos
 2. Configure a tela de consentimento em **Google Auth Platform** e adicione os escopos `drive.readonly` e `drive.file`.
 3. Crie um OAuth Client do tipo **Web application** e cadastre a origem usada para acessar o Open WebUI.
 4. Crie uma API Key restrita ao site e às APIs Google Drive e Google Picker.
-5. Abra `http://<servidor>:8787/admin/` e entre em **Bases e Drive**.
+5. Abra `http://<servidor>:8080/admin/` e entre em **Bases e Drive**.
 6. No card **Integração do Open WebUI**, clique em **Configurar Picker**.
 7. Informe o OAuth Client ID e a API Key e clique em **Salvar e ativar**.
 8. Recarregue abas do Open WebUI que já estavam abertas.

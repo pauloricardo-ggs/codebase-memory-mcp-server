@@ -118,7 +118,7 @@ test('protege o token reversível do workspace com AES-GCM', () => {
 test('gerencia somente as chaves MCP pertencentes ao painel', () => {
   const config = {
     mcp: {
-      port: 8787,
+      port: 8080,
       targets: [{ name: 'codebase-memory', stdio: { cmd: '/bin/example' } }],
       policies: {
         cors: { allowOrigins: ['*'] },
