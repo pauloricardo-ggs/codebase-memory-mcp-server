@@ -83,7 +83,7 @@ docker compose logs --tail=200 docling open-webui knowledge-sync
 docker compose restart docling
 ```
 
-Prometheus e Grafana fazem parte do profile `monitoring`, habilitado pelo instalador em `COMPOSE_PROFILES`. Prometheus não possui porta no host; o Grafana é acessado exclusivamente em `http://localhost:8080/grafana/` ou `http://<servidor>:8080/grafana/` pelo proxy e usa sua própria tela de login. A credencial inicial fica armazenada com permissão `0600` em `data/secrets/monitoring.env`.
+Prometheus e Grafana fazem parte do profile `monitoring`, habilitado pelo instalador em `COMPOSE_PROFILES`. Prometheus não possui porta no host; o Grafana é acessado exclusivamente em `http://localhost:8080/grafana/` ou `http://<servidor>:8080/grafana/` pelo proxy e usa sua própria tela de login. O dashboard operacional também é incorporado na área **Observabilidade** do painel; o proxy limita esse iframe à mesma origem. A credencial inicial fica armazenada com permissão `0600` em `data/secrets/monitoring.env`.
 
 O instalador solicita a URL pública e usa `http://localhost:8080` como padrão. Em produção, informe `https://seu-dominio` — sem barra final e sem `/grafana`. As URLs passam a ser derivadas automaticamente:
 
@@ -99,6 +99,8 @@ Depois de alterar `PUBLIC_BASE_URL`, recrie `open-webui`, `grafana` e `proxy` ou
 O proxy externo deve encaminhar `X-Forwarded-Proto: https`; assim, o painel marca automaticamente o cookie administrativo como `Secure`.
 
 O painel administrativo usa o usuário definido pelo instalador, JWT assinado e cookie `HttpOnly`, `SameSite=Strict`, limitado a `/admin`. Não há cadastro nem recuperação de senha. A alteração da credencial é feita executando novamente `./install.sh`. Os arquivos `data/secrets/admin.env` e `data/secrets/admin-jwt-secret` devem permanecer com permissão `0600`.
+
+A página **Operações** mantém em `data/jobs.json` os logs dos últimos sete dias e apresenta dez operações por página. O arquivo é preservado durante reinstalações; operações que estavam em execução quando o serviço reiniciou são registradas como interrompidas.
 
 O Grafana abre por padrão o dashboard provisionado **Codebase Memory — Operação**. Ele é atualizado a partir do arquivo versionado `monitoring/grafana/dashboards/codebase-memory-operation.json`; crie outro dashboard para customizações locais, pois o provisionado é somente leitura.
 

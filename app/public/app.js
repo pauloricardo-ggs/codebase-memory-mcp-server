@@ -2,9 +2,11 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const content = $('#content');
 const modal = $('#modal');
+const grafanaDashboardUrl = '/grafana/d/codebase-memory-operation/codebase-memory-operacao?orgId=1';
 let currentView = 'workspaces';
 let currentWorkspace = null;
 let jobs = [];
+let jobsPagination = { page: 1, pageSize: 10, total: 0, totalPages: 1 };
 let selectedRepositories = new Set();
 let selectedMcpRepositories = new Set();
 let mcpAccessOptions = [];
@@ -299,11 +301,29 @@ async function knowledgeSyncFilesModal(knowledgeBaseId) {
   openModal(`<h2 class="modal-title">Arquivos gerenciados</h2><p class="modal-copy">Reprocesse um documento sem varrer novamente todas as pastas vinculadas.</p><div class="managed-files">${rows || '<div class="empty" style="min-height:160px">Nenhum arquivo sincronizado.</div>'}</div><div class="modal-actions"><button class="button" value="cancel">Fechar</button></div>`);
 }
 
+const jobStatusLabels = { queued:'Na fila', running:'Executando', completed:'Concluída', failed:'Falhou', interrupted:'Interrompida' };
+
 function renderJobs() {
   currentView = 'jobs'; currentWorkspace = null;
   setNavigation('jobs');
   setHeader('Operações', 'Administração');
-  content.innerHTML = jobs.length ? jobs.map(job => `<article class="card job"><div class="job-top"><div><h3>${escapeHtml(job.label)}</h3><span class="status ${job.status}">${job.status}</span></div><time>${date(job.createdAt)}</time></div>${job.log ? `<pre>${escapeHtml(job.log)}</pre>` : ''}${job.error ? `<p style="color:var(--danger)">${escapeHtml(job.error)}</p>` : ''}<div class="progress ${['queued','running'].includes(job.status) ? 'indeterminate' : ''}"><i style="width:${job.progress}%"></i></div></article>`).join('') : '<div class="empty"><div><div class="empty-icon">↻</div><h2>Nenhuma operação recente</h2><p>Clones, sincronizações e indexações aparecerão aqui.</p></div></div>';
+  const pagination = `<div class="jobs-pagination"><span>${jobsPagination.total} operaç${jobsPagination.total === 1 ? 'ão' : 'ões'} nos últimos 7 dias</span><div><button class="button small" data-action="jobs-page" data-page="${jobsPagination.page - 1}" ${jobsPagination.page <= 1 ? 'disabled' : ''}>← Anterior</button><strong>Página ${jobsPagination.page} de ${jobsPagination.totalPages}</strong><button class="button small" data-action="jobs-page" data-page="${jobsPagination.page + 1}" ${jobsPagination.page >= jobsPagination.totalPages ? 'disabled' : ''}>Próxima →</button></div></div>`;
+  content.innerHTML = jobs.length ? `<div class="jobs-list">${jobs.map(job => `<article class="card job"><div class="job-top"><div><h3>${escapeHtml(job.label)}</h3><span class="status ${escapeHtml(job.status)}">${escapeHtml(jobStatusLabels[job.status] || job.status)}</span></div><time>${date(job.createdAt)}</time></div>${job.log ? `<pre>${escapeHtml(job.log)}</pre>` : ''}${job.error ? `<p class="job-error">${escapeHtml(job.error)}</p>` : ''}<div class="progress ${['queued','running'].includes(job.status) ? 'indeterminate' : ''}"><i style="width:${job.progress}%"></i></div></article>`).join('')}</div>${pagination}` : `<div class="empty"><div><div class="empty-icon">↻</div><h2>Nenhuma operação recente</h2><p>Clones, sincronizações e indexações dos últimos sete dias aparecerão aqui.</p></div></div>${pagination}`;
+}
+
+async function openJobs(page = 1) {
+  currentView = 'jobs'; currentWorkspace = null;
+  setNavigation('jobs');
+  setHeader('Operações', 'Administração');
+  content.innerHTML = '<div class="loading"><i></i> Carregando operações…</div>';
+  await refreshJobs(page);
+}
+
+function renderObservability() {
+  currentView = 'observability'; currentWorkspace = null;
+  setNavigation('observability');
+  setHeader('Observabilidade', 'Administração / Monitoramento', `<a class="button observability-open" href="${grafanaDashboardUrl}" target="_blank" rel="noopener">Abrir no Grafana ↗</a>`);
+  content.innerHTML = `<div class="observability-notice"><span>◉</span><p>O Grafana mantém uma sessão própria. Se a tela de login aparecer, use a credencial administrativa configurada na instalação.</p></div><div class="observability-frame"><iframe src="${grafanaDashboardUrl}&kiosk" title="Dashboard de operação do Codebase Memory" loading="eager"></iframe></div>`;
 }
 
 function mcpUserRow(user) {
@@ -490,10 +510,12 @@ document.addEventListener('change', event => {
   }
 });
 
-async function refreshJobs() {
+async function refreshJobs(page = jobsPagination.page) {
   try {
-    jobs = (await api('/api/jobs')).jobs;
-    const active = jobs.filter(job => ['queued','running'].includes(job.status)).length;
+    const result = await api(`/api/jobs?page=${encodeURIComponent(page)}&pageSize=${jobsPagination.pageSize}`);
+    jobs = result.jobs;
+    jobsPagination = result.pagination;
+    const active = result.activeCount;
     $('#job-count').textContent = active; $('#job-count').hidden = !active;
     if (currentView === 'jobs') renderJobs();
     if (currentView === 'workspace') renderWorkspace(currentWorkspace);
@@ -505,10 +527,12 @@ document.addEventListener('click', async event => {
   const action = target.dataset.action;
   try {
     if (target.dataset.view === 'workspaces') return renderWorkspaces();
-    if (target.dataset.view === 'jobs') return renderJobs();
+    if (target.dataset.view === 'jobs') return openJobs(1);
+    if (target.dataset.view === 'observability') return renderObservability();
     if (target.dataset.view === 'mcp-users') return renderMcpUsers();
     if (target.dataset.view === 'knowledge-sync') return renderKnowledgeSync();
     if (target.dataset.workspace) return renderWorkspace(target.dataset.workspace);
+    if (action === 'jobs-page') return openJobs(Number(target.dataset.page));
     if (action === 'new-workspace') return newWorkspaceModal();
     if (action === 'configure-knowledge-sync') return knowledgeSyncModal(target.dataset.kb);
     if (action === 'configure-drive-picker') return drivePickerModal();

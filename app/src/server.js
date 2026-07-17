@@ -8,12 +8,14 @@ import { assertSafeSegment, DEFAULT_TIMEZONE, DEFAULT_WORKSPACE_CRON, cronMatche
 import { startMcpGuardrailServer } from './mcp-guardrail.js';
 import { gauge, increment, log as structuredLog, metricsText, observe } from './observability.js';
 import { createAdminAuth } from './auth.js';
+import { JOB_HISTORY_RETENTION_DAYS, JOB_LOG_MAX_CHARACTERS, loadJobHistory, paginateJobs, pruneJobHistory, recoverInterruptedJobs, saveJobHistory } from './job-history.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.APP_DATA_DIR || '/data/app';
 const REPOSITORIES_DIR = process.env.CBM_ALLOWED_ROOT || '/data/repositories';
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const JOB_HISTORY_FILE = path.join(DATA_DIR, 'jobs.json');
 const GITHUB_CREDENTIALS_FILE = path.join(DATA_DIR, 'secrets', 'github-credentials.json');
 const MCP_USERS_FILE = path.join(DATA_DIR, 'secrets', 'mcp-users.json');
 const MCP_SYSTEM_TOKEN_FILE = path.join(DATA_DIR, 'secrets', 'mcp-system-token');
@@ -38,6 +40,11 @@ const ADMIN_COOKIE_SECURE = process.env.ADMIN_COOKIE_SECURE === 'true';
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
 let state = await loadState(STATE_FILE);
+const storedJobs = await loadJobHistory(JOB_HISTORY_FILE);
+const retainedJobs = pruneJobHistory(storedJobs);
+const recoveredJobs = recoverInterruptedJobs(retainedJobs);
+const jobs = recoveredJobs.jobs;
+const jobHistoryMigrated = retainedJobs.length !== storedJobs.length || recoveredJobs.changed;
 function defaultUpdateSchedule() {
   return { enabled: true, cron: DEFAULT_WORKSPACE_CRON, timezone: WORKSPACE_TIMEZONE, lastRunAt: null, lastRunStatus: null, lastScheduledMinute: null };
 }
@@ -54,6 +61,18 @@ state.repositories = state.repositories.map(item => {
   stateMigrated = true;
   return { ...item, accessId: randomUUID() };
 });
+state.repositories = state.repositories.map(item => {
+  if (!item.activeJobId && item.syncStatus !== 'syncing' && !['cloning', 'indexing'].includes(item.status)) return item;
+  stateMigrated = true;
+  const updated = { ...item };
+  delete updated.activeJobId;
+  if (updated.syncStatus === 'syncing') {
+    updated.syncStatus = 'error';
+    updated.syncError = 'Operação interrompida pela reinicialização do serviço.';
+  }
+  if (['cloning', 'indexing'].includes(updated.status)) updated.status = 'error';
+  return updated;
+});
 let mcpUsersMigrated = false;
 mcpUserStore.users = mcpUserStore.users.map(item => {
   if (Array.isArray(item.repositoryIds)) return item;
@@ -61,6 +80,7 @@ mcpUserStore.users = mcpUserStore.users.map(item => {
   return { ...item, repositoryIds: [] };
 });
 if (stateMigrated || schedulesMigrated) await saveState(STATE_FILE, state);
+if (jobHistoryMigrated) await saveJobHistory(JOB_HISTORY_FILE, jobs);
 if (mcpUsersMigrated) await saveMcpUserStore(MCP_USERS_FILE, mcpUserStore);
 let mcpSystemToken = await loadSecret(MCP_SYSTEM_TOKEN_FILE);
 let knowledgeSyncToken = KNOWLEDGE_SYNC_ENABLED ? await loadSecret(KNOWLEDGE_SYNC_TOKEN_FILE) : '';
@@ -76,7 +96,6 @@ const storedGithubCredentials = await loadCredentials(GITHUB_CREDENTIALS_FILE);
 let githubToken = storedGithubCredentials?.token ?? '';
 let githubUser = storedGithubCredentials?.user ?? null;
 let githubCache = { at: 0, repositories: [] };
-const jobs = [];
 const locks = new Set();
 const syncQueues = new Map();
 const syncWorkspaceOrder = [];
@@ -288,7 +307,44 @@ function repository(workspaceId, repositoryId) {
   return found;
 }
 
-async function persist() { await saveState(STATE_FILE, state); }
+let jobPersistence = Promise.resolve();
+let jobHistoryTimer = null;
+
+function retainRecentJobs() {
+  const retained = pruneJobHistory(jobs);
+  if (retained.length === jobs.length) return false;
+  jobs.splice(0, jobs.length, ...retained);
+  return true;
+}
+
+function enqueueJobPersistence() {
+  retainRecentJobs();
+  const jobsSnapshot = structuredClone(jobs);
+  const write = jobPersistence.then(() => saveJobHistory(JOB_HISTORY_FILE, jobsSnapshot));
+  jobPersistence = write.catch(() => {});
+  return write;
+}
+
+function persistJobHistory() {
+  if (jobHistoryTimer) clearTimeout(jobHistoryTimer);
+  jobHistoryTimer = null;
+  return enqueueJobPersistence();
+}
+
+function scheduleJobHistoryPersistence() {
+  if (jobHistoryTimer) return;
+  jobHistoryTimer = setTimeout(() => {
+    jobHistoryTimer = null;
+    void enqueueJobPersistence().catch(error => structuredLog('error', 'job_history_persist_failed', { error: error.message }));
+  }, 500);
+  jobHistoryTimer.unref();
+}
+
+async function persist() {
+  if (jobHistoryTimer) clearTimeout(jobHistoryTimer);
+  jobHistoryTimer = null;
+  await Promise.all([saveState(STATE_FILE, state), enqueueJobPersistence()]);
+}
 
 async function refreshRepositoryProjects({ force = false } = {}) {
   if (!CBM_PROJECT_RECONCILE) return;
@@ -625,15 +681,18 @@ async function listGithubRepositories() {
 function createJob(type, label, lockKey, operation) {
   if (locks.has(lockKey)) throw new Error('Já existe uma operação em andamento para este recurso.');
   const job = { id: randomUUID(), type, label, status: 'queued', progress: 0, log: '', createdAt: new Date().toISOString() };
-  jobs.unshift(job);
-  jobs.splice(50);
+  addJob(job);
   locks.add(lockKey);
   gauge('cbm_jobs_active', locks.size);
 
   setImmediate(async () => {
     job.status = 'running';
     job.startedAt = new Date().toISOString();
-    const log = text => { job.log = `${job.log}${text}`.slice(-50_000); };
+    scheduleJobHistoryPersistence();
+    const log = text => {
+      job.log = `${job.log}${text}`.slice(-JOB_LOG_MAX_CHARACTERS);
+      scheduleJobHistoryPersistence();
+    };
     try {
       await operation(job, log);
       job.progress = 100;
@@ -650,6 +709,7 @@ function createJob(type, label, lockKey, operation) {
     } finally {
       job.finishedAt = new Date().toISOString();
       observe('cbm_job_duration_seconds', (Date.parse(job.finishedAt) - Date.parse(job.startedAt)) / 1000, { type, status: job.status });
+      for (const item of state.repositories) if (item.activeJobId === job.id) delete item.activeJobId;
       locks.delete(lockKey);
       gauge('cbm_jobs_active', locks.size);
       await persist().catch(console.error);
@@ -660,7 +720,8 @@ function createJob(type, label, lockKey, operation) {
 
 function addJob(job) {
   jobs.unshift(job);
-  jobs.splice(50);
+  retainRecentJobs();
+  scheduleJobHistoryPersistence();
   return job;
 }
 
@@ -688,7 +749,11 @@ function pumpSyncQueue() {
       job.startedAt = new Date().toISOString();
       item.syncStatus = 'syncing';
       delete item.syncError;
-      const log = text => { job.log = `${job.log}${text}`.slice(-50_000); };
+      scheduleJobHistoryPersistence();
+      const log = text => {
+        job.log = `${job.log}${text}`.slice(-JOB_LOG_MAX_CHARACTERS);
+        scheduleJobHistoryPersistence();
+      };
       try {
         const previousCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: item.path })).stdout.trim();
         await run('git', ['pull', '--ff-only'], { cwd: item.path, env: gitAuthEnvironment(githubToken), onOutput: log });
@@ -708,6 +773,7 @@ function pumpSyncQueue() {
         log(`\n${error.message}\n`);
       } finally {
         job.finishedAt = new Date().toISOString();
+        if (item.activeJobId === job.id) delete item.activeJobId;
         locks.delete(lockKey);
         activeRepositorySyncs -= 1;
         await persist().catch(console.error);
@@ -1126,7 +1192,12 @@ async function routeApi(request, response, url) {
       }
     }
   }
-  if (request.method === 'GET' && url.pathname === '/api/jobs') return json(response, 200, { jobs });
+  if (request.method === 'GET' && url.pathname === '/api/jobs') {
+    if (retainRecentJobs()) scheduleJobHistoryPersistence();
+    const result = paginateJobs(jobs, { page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize') });
+    const activeCount = jobs.filter(job => ['queued', 'running'].includes(job.status)).length;
+    return json(response, 200, { ...result, activeCount, retentionDays: JOB_HISTORY_RETENTION_DAYS });
+  }
   return json(response, 404, { error: 'Rota não encontrada.' });
 }
 
@@ -1181,6 +1252,9 @@ async function checkWorkspaceSchedules(now = new Date()) {
 
 await checkWorkspaceSchedules().catch(error => console.warn('Falha ao verificar rotinas:', error.message));
 setInterval(() => checkWorkspaceSchedules().catch(error => console.warn('Falha ao verificar rotinas:', error.message)), 15_000).unref();
+setInterval(() => {
+  if (retainRecentJobs()) void persistJobHistory().catch(error => structuredLog('error', 'job_history_cleanup_failed', { error: error.message }));
+}, 60 * 60 * 1000).unref();
 await startMcpGuardrailServer(mcpAccess, MCP_GUARDRAIL_ADDR);
 await provisionMcpSystemToken();
 await provisionWorkspaceMcpTokens();

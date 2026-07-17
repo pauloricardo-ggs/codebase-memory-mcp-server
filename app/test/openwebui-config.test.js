@@ -66,6 +66,42 @@ test('Grafana provisiona dashboard operacional e Prometheus como datasource padr
   assert.match(provider, /path: \/var\/lib\/grafana\/dashboards/);
 });
 
+test('painel incorpora o dashboard operacional do Grafana somente na mesma origem', async () => {
+  const [compose, nginx, html, browser, styles] = await Promise.all([
+    readFile(path.join(root, 'compose.yaml'), 'utf8'),
+    readFile(path.join(root, 'nginx/nginx.conf'), 'utf8'),
+    readFile(path.join(root, 'app/public/index.html'), 'utf8'),
+    readFile(path.join(root, 'app/public/app.js'), 'utf8'),
+    readFile(path.join(root, 'app/public/styles.css'), 'utf8')
+  ]);
+  assert.match(compose, /GF_SECURITY_ALLOW_EMBEDDING: "true"/);
+  assert.match(nginx, /location \^~ \/grafana\/[\s\S]*Content-Security-Policy "frame-ancestors 'self'"/);
+  assert.match(html, /data-view="observability"/);
+  assert.match(browser, /function renderObservability\(\)/);
+  assert.match(browser, /\/grafana\/d\/codebase-memory-operation\/codebase-memory-operacao\?orgId=1/);
+  assert.match(browser, /title="Dashboard de operação do Codebase Memory"/);
+  assert.match(browser, /O Grafana mantém uma sessão própria/);
+  assert.match(styles, /\.observability-frame iframe \{[^}]*width:100%/);
+});
+
+test('painel persiste operações por sete dias e navega pelo histórico paginado', async () => {
+  const [browser, styles, server, history] = await Promise.all([
+    readFile(path.join(root, 'app/public/app.js'), 'utf8'),
+    readFile(path.join(root, 'app/public/styles.css'), 'utf8'),
+    readFile(path.join(root, 'app/src/server.js'), 'utf8'),
+    readFile(path.join(root, 'app/src/job-history.js'), 'utf8')
+  ]);
+  assert.match(server, /JOB_HISTORY_FILE = path\.join\(DATA_DIR, 'jobs\.json'\)/);
+  assert.match(server, /paginateJobs\(jobs/);
+  assert.match(server, /activeCount/);
+  assert.match(history, /JOB_HISTORY_RETENTION_DAYS = 7/);
+  assert.match(history, /Operação interrompida pela reinicialização do serviço/);
+  assert.match(browser, /\/api\/jobs\?page=\$\{encodeURIComponent\(page\)\}&pageSize=/);
+  assert.match(browser, /data-action="jobs-page"/);
+  assert.match(browser, /Página \$\{jobsPagination\.page\} de \$\{jobsPagination\.totalPages\}/);
+  assert.match(styles, /\.jobs-pagination \{/);
+});
+
 test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e MCP', async () => {
   const [compose, nginx, install] = await Promise.all([
     readFile(path.join(root, 'compose.yaml'), 'utf8'),
@@ -80,6 +116,7 @@ test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e 
   assert.match(compose, /WEBUI_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8080\}"/);
   assert.match(compose, /GF_SERVER_ROOT_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8080\}\/grafana\/"/);
   assert.match(compose, /GF_SERVER_SERVE_FROM_SUB_PATH: "true"/);
+  assert.match(compose, /GF_SECURITY_ALLOW_EMBEDDING: "true"/);
   assert.match(nginx, /location \^~ \/grafana\//);
   assert.match(nginx, /set \$grafana_upstream http:\/\/grafana:3000/);
   assert.match(nginx, /proxy_pass \$grafana_upstream/);

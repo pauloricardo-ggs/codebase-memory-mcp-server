@@ -64,7 +64,8 @@ O Google Drive é configurado depois da instalação, pelo painel. Consulte [Con
 | Endpoint MCP | `http://<servidor>:8080/mcp` |
 | Grafana | `http://<servidor>:8080/grafana/` |
 
-O Open WebUI e o Grafana usam seus próprios logins. O painel administrativo possui sessão JWT própria, limitada a `/admin`, e `/mcp` usa tokens MCP individuais. Somente a porta do proxy é publicada; Prometheus e os demais backends permanecem na rede Docker.
+O Open WebUI e o Grafana usam seus próprios logins. O dashboard do Grafana também fica incorporado na área **Observabilidade** do painel administrativo; na primeira abertura, pode ser necessário autenticar-se no próprio Grafana. O painel administrativo possui sessão JWT própria, limitada a `/admin`, e `/mcp` usa tokens MCP individuais. Somente a porta do proxy é publicada; Prometheus e os demais backends permanecem na rede Docker.
+O histórico da área **Operações** é persistido por sete dias em `data/jobs.json`, sobrevive à reinstalação e é exibido em páginas de dez registros.
 O dashboard provisionado **Codebase Memory — Operação** é aberto como página inicial e acompanha saúde, sincronizações, arquivos, jobs, erros externos, latência e memória.
 
 ## Primeiro uso

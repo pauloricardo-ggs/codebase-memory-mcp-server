@@ -121,6 +121,7 @@ Estados antigos com `intervalMinutes` são migrados automaticamente. O intervalo
 | Dado | Local |
 | --- | --- |
 | Estado administrativo e segredos | `data/` |
+| Histórico de operações do painel (7 dias) | `data/jobs.json` |
 | Estado e manifesto do Drive | `data/knowledge-sync/state.json` |
 | Clones dos repositórios | `repositories/` |
 | Índices do Codebase Memory | `cache/` |
@@ -151,7 +152,7 @@ O instalador habilita o profile Compose `monitoring`, que inicia Prometheus e Gr
 docker compose --profile monitoring up -d prometheus grafana
 ```
 
-Prometheus permanece exclusivamente na rede Docker e não possui rota no proxy. O Grafana é publicado em `/grafana/` e utiliza seu login próprio. Em produção, a infraestrutura externa deve terminar HTTPS e restringir a origem aos IPs corporativos.
+Prometheus permanece exclusivamente na rede Docker e não possui rota no proxy. O Grafana é publicado em `/grafana/`, utiliza seu login próprio e tem o dashboard operacional incorporado na área **Observabilidade** do painel administrativo. O proxy restringe o embedding à mesma origem com `frame-ancestors 'self'`. Em produção, a infraestrutura externa deve terminar HTTPS e restringir a origem aos IPs corporativos.
 
 As métricas não usam perguntas, nomes de arquivo ou usuário como labels. Logs operacionais são JSON e utilizam IDs de operação, sem conteúdo documental ou credenciais.
 

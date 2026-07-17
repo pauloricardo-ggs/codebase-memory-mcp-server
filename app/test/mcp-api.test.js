@@ -129,6 +129,25 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
       }
     ]
   }));
+  const jobHistoryNow = Date.now();
+  const recentJobs = Array.from({ length: 23 }, (_, index) => ({
+    id: `job-${index + 1}`,
+    type: 'index',
+    label: `Operação ${index + 1}`,
+    status: 'completed',
+    progress: 100,
+    log: `log ${index + 1}`,
+    createdAt: new Date(jobHistoryNow - index * 60_000).toISOString(),
+    finishedAt: new Date(jobHistoryNow - index * 60_000 + 1_000).toISOString()
+  }));
+  await writeFile(path.join(appDataDirectory, 'jobs.json'), JSON.stringify({
+    version: 1,
+    jobs: [
+      { id: 'job-running', type: 'sync', label: 'Operação em andamento', status: 'running', progress: 40, log: 'executando', createdAt: new Date(jobHistoryNow).toISOString() },
+      ...recentJobs,
+      { id: 'job-expired', type: 'index', label: 'Operação expirada', status: 'failed', progress: 10, log: 'antigo', createdAt: new Date(jobHistoryNow - 8 * 86_400_000).toISOString(), finishedAt: new Date(jobHistoryNow - 8 * 86_400_000).toISOString() }
+    ]
+  }));
   const app = spawn(process.execPath, ['src/server.js'], {
     cwd: path.resolve(import.meta.dirname, '..'),
     env: {
@@ -174,6 +193,18 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   assert.equal(login.status, 200);
   request.adminCookie = login.headers.get('set-cookie').split(';')[0];
   t.after(() => { request.adminCookie = ''; });
+  const firstJobsPage = await request(`http://127.0.0.1:${appPort}/api/jobs?page=1&pageSize=10`);
+  assert.equal(firstJobsPage.jobs.length, 10);
+  assert.deepEqual(firstJobsPage.pagination, { page: 1, pageSize: 10, total: 24, totalPages: 3 });
+  assert.equal(firstJobsPage.jobs[0].id, 'job-running');
+  assert.equal(firstJobsPage.jobs[0].status, 'interrupted');
+  assert.equal(firstJobsPage.activeCount, 0);
+  assert.equal(firstJobsPage.retentionDays, 7);
+  const lastJobsPage = await request(`http://127.0.0.1:${appPort}/api/jobs?page=3&pageSize=10`);
+  assert.equal(lastJobsPage.jobs.length, 4);
+  const persistedJobs = JSON.parse(await readFile(path.join(appDataDirectory, 'jobs.json'), 'utf8')).jobs;
+  assert.equal(persistedJobs.some(job => job.id === 'job-expired'), false);
+  assert.equal(persistedJobs.find(job => job.id === 'job-running').status, 'interrupted');
   const guardrail = guardrailClient(guardrailPort);
   t.after(() => guardrail.close());
 
