@@ -148,6 +148,7 @@ services:
 
   ollama:
     image: ollama/ollama:${OLLAMA_VERSION:-0.32.1}
+    profiles: ["ollama-docker"]
     restart: unless-stopped
     volumes:
       - ollama-data:/root/.ollama
@@ -181,14 +182,12 @@ services:
     image: codebase-memory-open-webui:0.10.2-google-drive-config
     restart: unless-stopped
     depends_on:
-      ollama:
-        condition: service_healthy
       docling:
         condition: service_started
     env_file:
       - ./data/secrets/openwebui.env
     environment:
-      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
       RAG_EMBEDDING_ENGINE: ollama
       RAG_EMBEDDING_MODEL: bge-m3
       CONTENT_EXTRACTION_ENGINE: docling
@@ -223,7 +222,7 @@ services:
       - ./data/secrets/openwebui.env
     environment:
       OPENWEBUI_URL: http://open-webui:8080
-      OLLAMA_URL: http://ollama:11434
+      OLLAMA_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
       OLLAMA_CHAT_MODEL: "${OLLAMA_CHAT_MODEL:-gemma4:e2b}"
       OLLAMA_EMBEDDING_MODEL: bge-m3
       MCP_ADMIN_URL: http://proxy:8080/mcp

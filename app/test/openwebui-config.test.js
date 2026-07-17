@@ -24,6 +24,10 @@ test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker permanente'
   assert.match(compose, /openwebui-data:/);
   assert.match(compose, /context: \.\/openwebui/);
   assert.match(compose, /image: codebase-memory-open-webui:0\.10\.2-google-drive-config/);
+  assert.match(compose, /profiles: \["ollama-docker"\]/);
+  assert.match(compose, /OLLAMA_BASE_URL: "\$\{OLLAMA_BASE_URL:-http:\/\/ollama:11434\}"/);
+  assert.match(compose, /OLLAMA_URL: "\$\{OLLAMA_BASE_URL:-http:\/\/ollama:11434\}"/);
+  assert.doesNotMatch(compose, /ollama:\s*\n\s*condition: service_healthy/);
   assert.match(compose, /^  knowledge-sync:/m);
   assert.doesNotMatch(compose, /profiles: \["google-drive"\]/);
   assert.match(compose, /KNOWLEDGE_SYNC_ENABLED: "true"/);
@@ -133,6 +137,11 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   assert.match(compose, /OLLAMA_VERSION:-0\.32\.1/);
   assert.match(compose, /OLLAMA_CHAT_MODEL:-gemma4:e2b/);
   assert.match(install, /ask_ollama_model/);
+  assert.match(install, /ask_ollama_runtime/);
+  assert.match(install, /brew" install ollama|BREW_BIN" install ollama/);
+  assert.match(install, /host\.docker\.internal:11434/);
+  assert.match(install, /com\.codebase-memory\.ollama\.plist/);
+  assert.match(install, /codebase-memory-mcp-ui-linux-\$\{docker_arch\}-portable\.tar\.gz/);
   assert.match(install, /ask_ollama_gpu/);
   assert.match(install, /nvidia-smi --query-gpu=index,uuid,name,memory\.total/);
   assert.match(install, /nvidia-ctk runtime configure --runtime=docker/);
@@ -143,7 +152,7 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   assert.doesNotMatch(install, /OAuth Client ID do Google/);
   assert.doesNotMatch(install, /API Key do Google Picker/);
   assert.doesNotMatch(install, /JSON da Service Account para sincronização/);
-  assert.doesNotMatch(install, /COMPOSE_PROFILES/);
+  assert.match(install, /COMPOSE_PROFILES/);
   assert.match(install, /restart_and_validate_knowledge_sync_command/);
   assert.match(install, /E-mail administrativo/);
   assert.match(install, /mínimo de 6 caracteres/);
@@ -162,6 +171,30 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   if (process.platform !== 'win32') {
     const mode = (await stat(path.join(root, 'openwebui/bootstrap/bootstrap.sh'))).mode & 0o777;
     assert.ok(mode & 0o100, 'bootstrap.sh deve ser executável');
+  }
+});
+
+test('seletor do runtime usa host no macOS e Docker no Linux', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-runtime-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    const selectionFile = path.join(temporaryRoot, 'selection');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      SYSTEM_PLATFORM=macos
+      ask_ollama_runtime <<< $'\\n'
+      printf '%s\\n%s\\n%s\\n' "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$OLLAMA_COMPOSE_PROFILES" >"$2"
+      SYSTEM_PLATFORM=linux
+      OLLAMA_RUNTIME=docker
+      ask_ollama_runtime <<< $'\\n'
+      printf '%s\\n%s\\n%s\\n' "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$OLLAMA_COMPOSE_PROFILES" >>"$2"
+    `, 'test', path.join(temporaryRoot, 'install.sh'), selectionFile]);
+    assert.equal(
+      await readFile(selectionFile, 'utf8'),
+      'host\nhttp://host.docker.internal:11434\n\ndocker\nhttp://ollama:11434\nollama-docker\n'
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 
@@ -215,6 +248,9 @@ test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
     const environment = await readFile(path.join(temporaryRoot, '.env'), 'utf8');
     assert.match(environment, /^OLLAMA_VERSION=0\.31\.2$/m);
     assert.match(environment, /^OLLAMA_CHAT_MODEL=gemma4:e2b$/m);
+    assert.match(environment, /^OLLAMA_RUNTIME=docker$/m);
+    assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/ollama:11434$/m);
+    assert.match(environment, /^COMPOSE_PROFILES=ollama-docker$/m);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -296,6 +332,73 @@ test('modo CPU remove o override de GPU do Ollama', async () => {
       write_ollama_gpu_compose_override
     `, 'test', path.join(temporaryRoot, 'install.sh')]);
     await assert.rejects(readFile(path.join(temporaryRoot, 'compose.gpu.yaml')), { code: 'ENOENT' });
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('modo host usa Metal, remove override NVIDIA e persiste a URL do macOS', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-host-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await writeFile(path.join(temporaryRoot, 'compose.gpu.yaml'), 'configuração anterior');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      SYSTEM_PLATFORM=macos
+      SYSTEM_ARCHITECTURE=arm64
+      OLLAMA_RUNTIME=host
+      OLLAMA_BASE_URL=http://host.docker.internal:11434
+      OLLAMA_COMPOSE_PROFILES=
+      CBM_CONTAINER_BIN="$2"
+      CBM_MEM_BUDGET_MB=8192
+      ADMIN_EMAIL=admin@example.com
+      ADMIN_USERNAME=admin@example.com
+      ask_ollama_gpu
+      write_ollama_gpu_compose_override
+      create_environment_file
+    `, 'test', path.join(temporaryRoot, 'install.sh'), path.join(temporaryRoot, 'data/bin/codebase-memory-mcp')]);
+
+    await assert.rejects(readFile(path.join(temporaryRoot, 'compose.gpu.yaml')), { code: 'ENOENT' });
+    const environment = await readFile(path.join(temporaryRoot, '.env'), 'utf8');
+    assert.match(environment, /^CBM_HOST_BIN=.*\/data\/bin\/codebase-memory-mcp$/m);
+    assert.match(environment, /^OLLAMA_RUNTIME=host$/m);
+    assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/host\.docker\.internal:11434$/m);
+    assert.match(environment, /^COMPOSE_PROFILES=$/m);
+    assert.match(environment, /^OLLAMA_GPU_MODE=metal$/m);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('modo host registra um LaunchAgent persistente para o Ollama', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-launch-agent-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    const binaryDirectory = path.join(temporaryRoot, 'bin');
+    await mkdir(binaryDirectory);
+    for (const command of ['launchctl', 'osascript', 'plutil']) {
+      const executable = path.join(binaryDirectory, command);
+      await writeFile(executable, '#!/usr/bin/env bash\nexit 0\n');
+      await chmod(executable, 0o755);
+    }
+
+    await execFileAsync('bash', ['-c', `
+      export HOME="$2"
+      export PATH="$3:$PATH"
+      source "$1"
+      OLLAMA_BIN=/usr/bin/true
+      configure_host_ollama_command
+    `, 'test', path.join(temporaryRoot, 'install.sh'), temporaryRoot, binaryDirectory]);
+
+    const launchAgent = await readFile(
+      path.join(temporaryRoot, 'Library/LaunchAgents/com.codebase-memory.ollama.plist'),
+      'utf8'
+    );
+    assert.match(launchAgent, /<string>com\.codebase-memory\.ollama<\/string>/);
+    assert.match(launchAgent, /<string>\/usr\/bin\/true<\/string>/);
+    assert.match(launchAgent, /<key>OLLAMA_HOST<\/key>\s*<string>0\.0\.0\.0:11434<\/string>/);
+    assert.match(launchAgent, /<key>RunAtLoad<\/key>\s*<true\/>/);
+    assert.match(launchAgent, /<key>KeepAlive<\/key>\s*<true\/>/);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

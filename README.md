@@ -11,7 +11,7 @@ Depois de instalado, o ambiente oferece:
 - usuários MCP individuais com acesso limitado aos repositórios autorizados;
 - sincronização manual ou agendada dos clones;
 - interface visual para explorar os grafos indexados;
-- Open WebUI, Ollama e Docling executados pelo Docker Compose.
+- Open WebUI e Docling executados pelo Docker Compose, com Ollama em container ou nativo no macOS.
 - sincronização opcional entre pastas do Google Drive e Knowledge Bases.
 
 --- 
@@ -40,14 +40,14 @@ O token limita tanto as ferramentas disponíveis quanto os projetos retornados p
 --- 
 
 <details>
-<summary style="font-size: 1.5em; font-weight: bold;">Requisitos do servidor</summary>
+<summary style="font-size: 1.5em; font-weight: bold;">Requisitos do ambiente</summary>
 
-- Debian, Ubuntu ou distribuição compatível com `apt-get`;
+- Debian, Ubuntu ou distribuição compatível com `apt-get`; ou macOS 14 (Sonoma) ou mais recente;
 - usuário comum com acesso a `sudo`;
 - acesso de rede ao GitHub e aos clientes MCP;
 - acesso de leitura aos repositórios que serão indexados.
 
-O instalador configura Docker, Docker Compose, Git e o Codebase Memory MCP. Não execute o instalador diretamente como `root`.
+No Linux, o instalador configura Docker, Docker Compose, Git e o Codebase Memory MCP. No macOS, instala o Homebrew e o Docker Desktop quando necessário. Quando o modo nativo é selecionado, também instala o Ollama pelo Homebrew. Não execute o instalador diretamente como `root`.
 
 </details>
 
@@ -68,13 +68,14 @@ chmod +x install.sh
 Durante a instalação, informe:
 
 - o limite de memória do Codebase Memory;
+- o modo de execução do Ollama (`Docker` por padrão no Linux e `host macOS` por padrão no macOS);
 - o modelo Ollama que será baixado (`gemma4:e2b` por padrão, com `gemma4:e4b` e um identificador personalizado como alternativas);
 - o e-mail administrativo;
 - uma senha administrativa com pelo menos 6 caracteres.
 
 O Google Drive é configurado depois da instalação em **Bases e Drive**. Siga o guia [Configurar o Google Drive para o Open WebUI](docs/google-drive.md) para criar o projeto, ativar as APIs, configurar o Picker e enviar a Service Account pelo painel.
 
-O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers, baixa o modelo escolhido e o `bge-m3`, configura os exemplos do Open WebUI e valida o endpoint MCP. A conta do Open WebUI usa o nome `Admin` e o e-mail informado na instalação. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual. Se o e-mail ou a senha mudar, o instalador autentica com a credencial anterior, atualiza o administrador no banco do Open WebUI e preserva chats, documentos e Knowledge Bases.
+O instalador cria o `.env`, prepara os diretórios persistentes, constrói os containers, baixa o modelo escolhido e o `bge-m3`, configura os exemplos do Open WebUI e valida o endpoint MCP. No macOS com Ollama nativo, os containers usam `host.docker.internal` para acessar o serviço do host. A conta do Open WebUI usa o nome `Admin` e o e-mail informado na instalação. Em uma reinstalação, deixe a nova senha vazia para manter a credencial atual. Se o e-mail ou a senha mudar, o instalador autentica com a credencial anterior, atualiza o administrador no banco do Open WebUI e preserva chats, documentos e Knowledge Bases.
 
 Instalações novas usam o Codebase Memory MCP `v0.8.1`, baixado diretamente dessa release. O instalador preserva um binário já existente; para atualizar posteriormente por decisão administrativa, execute `~/.local/bin/codebase-memory-mcp update`.
 
@@ -165,7 +166,7 @@ Os dois presets são exemplos, mas já recebem como modelo-base o modelo Ollama 
 
 O `MCP Admin` usa a credencial Sistema/Playground e, portanto, possui acesso total a todos os projetos e ferramentas do MCP. Restrinja no Open WebUI quem pode acessar o `Code Model Sample` e a ferramenta. Para acessos com escopo por workspace ou por desenvolvedor, continue usando os tokens específicos criados pelo painel.
 
-A credencial administrativa e o `WEBUI_SECRET_KEY` ficam em `data/secrets/openwebui.env`, fora do Git. Os dados de Ollama, Docling e Open WebUI persistem em volumes Docker próprios.
+A credencial administrativa e o `WEBUI_SECRET_KEY` ficam em `data/secrets/openwebui.env`, fora do Git. Os dados de Docling e Open WebUI persistem em volumes Docker próprios. No modo Docker, os modelos do Ollama ficam no volume `ollama-data`; no modo nativo do macOS, ficam em `~/.ollama`.
 
 O instalador sempre prepara o container leve `knowledge-sync`, mas não solicita credenciais do Google Drive. Sem uma conta de serviço e sem vínculos, ele permanece ocioso. Toda a configuração é feita em **Bases e Drive**: OAuth Client ID e API Key ativam o Picker nativo no Open WebUI; upload ou colagem do JSON habilita a sincronização automática. O painel também oferece teste de conexão, e-mail para compartilhamento, pastas, intervalo, execução manual, pausa, status e histórico.
 
@@ -268,6 +269,9 @@ ADMIN_EMAIL=joao@exemplo.com
 ADMIN_USERNAME=joao@exemplo.com
 OLLAMA_VERSION=0.32.1
 OLLAMA_CHAT_MODEL=gemma4:e2b
+OLLAMA_RUNTIME=docker
+OLLAMA_BASE_URL=http://ollama:11434
+COMPOSE_PROFILES=ollama-docker
 OLLAMA_GPU_MODE=all
 OLLAMA_GPU_DEVICE_IDS=
 ```
@@ -283,7 +287,10 @@ As opções mais comuns são:
 | `WORKSPACE_TIMEZONE` | Fuso usado nos agendamentos |
 | `REPOSITORY_SYNC_CONCURRENCY` | Quantidade de sincronizações simultâneas, entre 1 e 20 |
 | `OLLAMA_CHAT_MODEL` | Modelo baixado pelo instalador; padrão `gemma4:e2b` |
-| `OLLAMA_GPU_MODE` | Aceleração do Ollama: `cpu`, `all` ou `selected` |
+| `OLLAMA_RUNTIME` | Execução do Ollama: `docker` ou `host` |
+| `OLLAMA_BASE_URL` | URL do Ollama vista pelos containers |
+| `COMPOSE_PROFILES` | Ativa `ollama-docker` quando o serviço deve rodar em container |
+| `OLLAMA_GPU_MODE` | Aceleração do Ollama: `cpu`, `all`, `selected` ou `metal` |
 | `OLLAMA_GPU_DEVICE_IDS` | UUIDs NVIDIA separados por vírgula quando o modo é `selected` |
 | `OLLAMA_VERSION` | Tag da imagem Docker do Ollama; padrão `0.32.1` |
 | `DOCLING_VERSION` | Tag da imagem Docker do Docling Serve |
@@ -291,6 +298,8 @@ As opções mais comuns são:
 Execute novamente `./install.sh` depois de alterar configurações que exijam a recriação do ambiente.
 
 Quando o `nvidia-smi` encontra uma ou mais GPUs, o instalador permite usar todas, selecionar placas específicas ou manter o Ollama em CPU. A seleção é persistida por UUID — não pelo índice sujeito a mudanças — e gera o arquivo local `compose.gpu.yaml`. Se a aceleração for habilitada, o instalador também configura o NVIDIA Container Toolkit, reinicia o Docker e valida se as GPUs escolhidas estão visíveis dentro do container do Ollama.
+
+No macOS, o modo `host` instala o Ollama pelo Homebrew e registra o LaunchAgent `~/Library/LaunchAgents/com.codebase-memory.ollama.plist`. Para que os containers alcancem o serviço, o Ollama escuta em `0.0.0.0:11434`; restrinja essa porta no firewall e não a exponha à internet. O instalador baixa separadamente a variante Linux do Codebase Memory para `data/bin`, pois os containers não podem executar o binário Darwin instalado no host.
 
 </details>
 
@@ -328,6 +337,7 @@ Mantenha o clone no mesmo caminho depois da instalação, pois o `.env` contém 
 - conceda acesso somente aos repositórios necessários;
 - mantenha `data/`, `.env` e os tokens fora do Git;
 - não exponha o servidor diretamente à internet sem TLS e controles de rede;
+- no macOS com Ollama nativo, bloqueie o acesso externo à porta `11434`;
 - use SSO/OIDC e auditoria individual quando houver múltiplos administradores;
 - prefira uma GitHub App ou token fine-grained com permissões mínimas.
 

@@ -11,7 +11,9 @@ PROXY_SECRETS_DIR="${DATA_DIR}/secrets/proxy"
 AGENTGATEWAY_DATA_DIR="${DATA_DIR}/agentgateway"
 ENV_FILE="${BASE_DIR}/.env"
 GPU_COMPOSE_FILE="${BASE_DIR}/compose.gpu.yaml"
+OLLAMA_LAUNCH_AGENT="${HOME}/Library/LaunchAgents/com.codebase-memory.ollama.plist"
 CBM_BIN="${HOME}/.local/bin/codebase-memory-mcp"
+CBM_CONTAINER_BIN="$CBM_BIN"
 CBM_VERSION="v0.8.1"
 INSTALL_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/${CBM_VERSION}/install.sh"
 RELEASE_DOWNLOAD_URL="https://github.com/DeusData/codebase-memory-mcp/releases/download/${CBM_VERSION}"
@@ -26,8 +28,15 @@ OPENWEBUI_PREVIOUS_PASSWORD=''
 OPENWEBUI_DESIRED_PASSWORD=''
 OLLAMA_VERSION='0.32.1'
 OLLAMA_CHAT_MODEL='gemma4:e2b'
+OLLAMA_RUNTIME='docker'
+OLLAMA_BASE_URL='http://ollama:11434'
+OLLAMA_COMPOSE_PROFILES='ollama-docker'
 OLLAMA_GPU_MODE='cpu'
 OLLAMA_GPU_DEVICE_IDS=''
+SYSTEM_PLATFORM=''
+SYSTEM_ARCHITECTURE="$(uname -m)"
+BREW_BIN=''
+OLLAMA_BIN=''
 
 if [[ -t 1 ]]; then
   COLOR_BLUE='\033[0;34m'
@@ -105,9 +114,32 @@ run_step() {
   success "$message"
 }
 
+detect_system_platform() {
+  case "$(uname -s)" in
+    Linux) printf 'linux\n' ;;
+    Darwin) printf 'macos\n' ;;
+    *) fail "Sistema não suportado: $(uname -s). Use Linux ou macOS." ;;
+  esac
+}
+
 require_supported_system() {
+  local macos_major macos_version
   (( EUID != 0 )) || fail "Execute este instalador como usuário comum, não como root."
-  [[ -f /etc/os-release ]] || fail "Não foi possível identificar o sistema operacional."
+  SYSTEM_PLATFORM="$(detect_system_platform)"
+
+  if [[ "$SYSTEM_PLATFORM" == macos ]]; then
+    macos_version="$(sw_vers -productVersion)"
+    macos_major="${macos_version%%.*}"
+    [[ "$macos_major" =~ ^[0-9]+$ ]] && (( macos_major >= 14 )) \
+      || fail "O modo macOS requer macOS 14 (Sonoma) ou mais recente."
+    if [[ "$SYSTEM_ARCHITECTURE" == x86_64 && "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" == 1 ]]; then
+      SYSTEM_ARCHITECTURE='arm64'
+    fi
+    command -v sudo >/dev/null 2>&1 || fail "O comando sudo não está disponível."
+    return
+  fi
+
+  [[ -f /etc/os-release ]] || fail "Não foi possível identificar a distribuição Linux."
 
   # shellcheck disable=SC1091
   source /etc/os-release
@@ -159,7 +191,7 @@ validate_system_clock() {
   fi
 }
 
-install_dependencies() {
+install_linux_dependencies() {
   validate_system_clock
   run_step "Atualizando a lista de pacotes" sudo apt-get update
   run_step "Instalando dependências do sistema" sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y ca-certificates curl git gnupg jq openssh-client openssl util-linux docker.io
@@ -180,6 +212,172 @@ install_dependencies() {
   if ! sudo docker info >/dev/null 2>&1; then
     run_step "Iniciando o serviço do Docker" sudo systemctl enable --now docker
   fi
+}
+
+configure_homebrew_path() {
+  local candidate
+  if command -v brew >/dev/null 2>&1; then
+    BREW_BIN="$(command -v brew)"
+  else
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+      if [[ -x "$candidate" ]]; then
+        BREW_BIN="$candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -n "$BREW_BIN" ]]; then
+    export PATH="$($BREW_BIN --prefix)/bin:$($BREW_BIN --prefix)/sbin:$PATH"
+  fi
+}
+
+install_homebrew() {
+  configure_homebrew_path
+  if [[ -n "$BREW_BIN" ]]; then
+    success "Homebrew já está instalado"
+    return
+  fi
+
+  info "Instalando Homebrew"
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  configure_homebrew_path
+  [[ -n "$BREW_BIN" ]] || fail "O Homebrew não foi encontrado após a instalação."
+  success "Homebrew instalado"
+}
+
+wait_for_docker_desktop() {
+  local attempt
+  if docker info >/dev/null 2>&1; then
+    return
+  fi
+  open -ga Docker || fail "Não foi possível iniciar o Docker Desktop."
+  for attempt in {1..120}; do
+    if docker info >/dev/null 2>&1; then
+      success "Docker Desktop está ativo"
+      return
+    fi
+    sleep 2
+  done
+  fail "O Docker Desktop não ficou disponível. Conclua a configuração inicial do aplicativo e execute novamente o instalador."
+}
+
+install_macos_dependencies() {
+  local -a brew_packages=()
+  install_homebrew
+
+  command -v jq >/dev/null 2>&1 || brew_packages+=(jq)
+  command -v git >/dev/null 2>&1 || brew_packages+=(git)
+  if (( ${#brew_packages[@]} > 0 )); then
+    run_step "Instalando dependências pelo Homebrew" "$BREW_BIN" install "${brew_packages[@]}"
+  fi
+
+  if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+    run_step "Instalando Docker Desktop" "$BREW_BIN" install --cask docker-desktop
+    configure_homebrew_path
+  fi
+
+  local command_name
+  for command_name in bash curl git jq ssh openssl docker; do
+    command -v "$command_name" >/dev/null 2>&1 || fail "Dependência não encontrada: ${command_name}"
+  done
+  docker compose version >/dev/null 2>&1 || fail "O plugin Docker Compose não está disponível."
+  wait_for_docker_desktop
+}
+
+install_dependencies() {
+  if [[ "$SYSTEM_PLATFORM" == macos ]]; then
+    install_macos_dependencies
+  else
+    install_linux_dependencies
+  fi
+}
+
+xml_escape() {
+  sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"
+}
+
+configure_host_ollama_command() {
+  local ollama_bin ollama_bin_xml log_file log_file_xml user_domain
+  ollama_bin="$OLLAMA_BIN"
+  [[ -x "$ollama_bin" ]] || fail 'O executável do Ollama não está disponível para o LaunchAgent.'
+  log_file="${HOME}/Library/Logs/CodebaseMemoryOllama.log"
+  ollama_bin_xml="$(printf '%s' "$ollama_bin" | xml_escape)"
+  log_file_xml="$(printf '%s' "$log_file" | xml_escape)"
+  user_domain="gui/$(id -u)"
+
+  mkdir -p "$(dirname "$OLLAMA_LAUNCH_AGENT")" "$(dirname "$log_file")"
+  if [[ -n "$BREW_BIN" ]] && "$BREW_BIN" list --formula ollama >/dev/null 2>&1; then
+    "$BREW_BIN" services stop ollama >/dev/null 2>&1 || true
+  fi
+  osascript -e 'tell application "Ollama" to quit' >/dev/null 2>&1 || true
+  launchctl bootout "${user_domain}/com.codebase-memory.ollama" >/dev/null 2>&1 || true
+  launchctl bootout "$user_domain" "$OLLAMA_LAUNCH_AGENT" >/dev/null 2>&1 || true
+
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+    printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+    printf '%s\n' '<plist version="1.0">'
+    printf '%s\n' '<dict>'
+    printf '%s\n' '  <key>Label</key>'
+    printf '%s\n' '  <string>com.codebase-memory.ollama</string>'
+    printf '%s\n' '  <key>ProgramArguments</key>'
+    printf '%s\n' '  <array>'
+    printf '    <string>%s</string>\n' "$ollama_bin_xml"
+    printf '%s\n' '    <string>serve</string>'
+    printf '%s\n' '  </array>'
+    printf '%s\n' '  <key>EnvironmentVariables</key>'
+    printf '%s\n' '  <dict>'
+    printf '%s\n' '    <key>OLLAMA_HOST</key>'
+    printf '%s\n' '    <string>0.0.0.0:11434</string>'
+    printf '%s\n' '  </dict>'
+    printf '%s\n' '  <key>RunAtLoad</key>'
+    printf '%s\n' '  <true/>'
+    printf '%s\n' '  <key>KeepAlive</key>'
+    printf '%s\n' '  <true/>'
+    printf '%s\n' '  <key>StandardOutPath</key>'
+    printf '  <string>%s</string>\n' "$log_file_xml"
+    printf '%s\n' '  <key>StandardErrorPath</key>'
+    printf '  <string>%s</string>\n' "$log_file_xml"
+    printf '%s\n' '</dict>'
+    printf '%s\n' '</plist>'
+  } >"${OLLAMA_LAUNCH_AGENT}.tmp"
+  plutil -lint "${OLLAMA_LAUNCH_AGENT}.tmp" >/dev/null
+  chmod 600 "${OLLAMA_LAUNCH_AGENT}.tmp"
+  mv "${OLLAMA_LAUNCH_AGENT}.tmp" "$OLLAMA_LAUNCH_AGENT"
+  launchctl bootstrap "$user_domain" "$OLLAMA_LAUNCH_AGENT"
+  launchctl kickstart -k "${user_domain}/com.codebase-memory.ollama"
+}
+
+install_host_ollama() {
+  local attempt
+  [[ "$OLLAMA_RUNTIME" == host ]] || return 0
+  [[ "$SYSTEM_PLATFORM" == macos ]] || fail 'O modo host do Ollama requer macOS.'
+  configure_homebrew_path
+  [[ -n "$BREW_BIN" ]] || fail 'Homebrew não está disponível para instalar o Ollama.'
+
+  if command -v ollama >/dev/null 2>&1; then
+    OLLAMA_BIN="$(command -v ollama)"
+    success "Ollama já está instalado"
+  elif [[ -x /Applications/Ollama.app/Contents/Resources/ollama ]]; then
+    OLLAMA_BIN='/Applications/Ollama.app/Contents/Resources/ollama'
+    success "Ollama já está instalado"
+  else
+    run_step "Instalando Ollama pelo Homebrew" "$BREW_BIN" install ollama
+    configure_homebrew_path
+    OLLAMA_BIN="$(command -v ollama)"
+  fi
+  [[ -x "$OLLAMA_BIN" ]] || fail 'O executável do Ollama não foi encontrado.'
+
+  warn 'O Ollama escutará em 0.0.0.0:11434 para permitir o acesso dos containers; restrinja essa porta no firewall local.'
+  run_step "Configurando o Ollama como serviço nativo" configure_host_ollama_command
+  for attempt in {1..60}; do
+    if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+      success "Ollama nativo está disponível"
+      return
+    fi
+    sleep 2
+  done
+  fail "O Ollama nativo não ficou disponível. Consulte ${HOME}/Library/Logs/CodebaseMemoryOllama.log."
 }
 
 configure_nvidia_runtime_command() {
@@ -237,6 +435,54 @@ ask_memory_budget() {
   success "Budget definido em ${CBM_MEM_BUDGET_MB} MB"
 }
 
+ask_ollama_runtime() {
+  local choice default_choice existing_runtime
+  existing_runtime="$(read_existing_environment_value OLLAMA_RUNTIME)"
+
+  if [[ "$existing_runtime" == docker || ( "$existing_runtime" == host && "$SYSTEM_PLATFORM" == macos ) ]]; then
+    OLLAMA_RUNTIME="$existing_runtime"
+  elif [[ "$SYSTEM_PLATFORM" == macos ]]; then
+    OLLAMA_RUNTIME='host'
+  else
+    OLLAMA_RUNTIME='docker'
+  fi
+
+  printf "\n${COLOR_BOLD}Modo de execução do Ollama${COLOR_RESET}\n"
+  printf 'Onde o Ollama deve ser executado?\n\n'
+  printf '  1) Docker (padrão para Linux)\n'
+  printf '  2) Host macOS (Homebrew; Apple Silicon usa aceleração nativa)\n\n'
+
+  [[ "$OLLAMA_RUNTIME" == host ]] && default_choice=2 || default_choice=1
+  while true; do
+    read -r -p "Escolha [1-2, atual: ${default_choice}]: " choice
+    case "${choice:-$default_choice}" in
+      1)
+        OLLAMA_RUNTIME='docker'
+        OLLAMA_BASE_URL='http://ollama:11434'
+        OLLAMA_COMPOSE_PROFILES='ollama-docker'
+        break
+        ;;
+      2)
+        [[ "$SYSTEM_PLATFORM" == macos ]] || {
+          warn 'O modo host é suportado somente no macOS.'
+          continue
+        }
+        OLLAMA_RUNTIME='host'
+        OLLAMA_BASE_URL='http://host.docker.internal:11434'
+        OLLAMA_COMPOSE_PROFILES=''
+        break
+        ;;
+      *) warn 'Opção inválida. Escolha 1 ou 2.' ;;
+    esac
+  done
+
+  if [[ "$OLLAMA_RUNTIME" == host ]]; then
+    success 'Ollama será executado nativamente no macOS'
+  else
+    success 'Ollama será executado pelo Docker'
+  fi
+}
+
 ask_ollama_model() {
   local choice custom_model existing_model
   existing_model="$(read_existing_environment_value OLLAMA_CHAT_MODEL)"
@@ -278,6 +524,17 @@ ask_ollama_gpu() {
   existing_devices="$(read_existing_environment_value OLLAMA_GPU_DEVICE_IDS)"
   OLLAMA_GPU_MODE='cpu'
   OLLAMA_GPU_DEVICE_IDS=''
+
+  if [[ "$OLLAMA_RUNTIME" == host ]]; then
+    if [[ "$SYSTEM_ARCHITECTURE" == arm64 || "$SYSTEM_ARCHITECTURE" == aarch64 ]]; then
+      OLLAMA_GPU_MODE='metal'
+      success 'Ollama nativo usará a aceleração do Apple Silicon'
+    else
+      OLLAMA_GPU_MODE='cpu'
+      success 'Ollama nativo usará CPU neste Mac'
+    fi
+    return
+  fi
 
   if ! command -v nvidia-smi >/dev/null 2>&1; then
     info 'Nenhuma GPU NVIDIA foi detectada; o Ollama usará CPU.'
@@ -436,15 +693,20 @@ ask_proxy_access() {
 }
 
 create_local_structure() {
-  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
+  mkdir -p "$REPOSITORIES_DIR" "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/bin" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
   chmod 755 "$REPOSITORIES_DIR"
-  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
+  chmod 700 "$CACHE_DIR" "$DATA_DIR" "${DATA_DIR}/bin" "${DATA_DIR}/secrets" "$PROXY_SECRETS_DIR" "$AGENTGATEWAY_DATA_DIR" "${DATA_DIR}/knowledge-sync" "${DATA_DIR}/secrets/knowledge-sync"
   success "Estrutura local criada em ${BASE_DIR}"
 }
 
 write_ollama_gpu_compose_override() {
   local temporary_file="${GPU_COMPOSE_FILE}.tmp" device_id
   local -a device_ids=()
+  if [[ "$OLLAMA_RUNTIME" != docker ]]; then
+    rm -f "$GPU_COMPOSE_FILE" "$temporary_file"
+    success 'Override NVIDIA não é necessário para o Ollama nativo'
+    return
+  fi
   if [[ "$OLLAMA_GPU_MODE" == cpu ]]; then
     rm -f "$GPU_COMPOSE_FILE" "$temporary_file"
     success 'Ollama permanecerá em CPU'
@@ -568,8 +830,8 @@ create_environment_file() {
     existing_value="$(sed -n 's/^REPOSITORY_SYNC_CONCURRENCY=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 20 )) && repository_sync_concurrency="$existing_value"
   fi
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$temporary_file"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nAGENTGATEWAY_UI_PORT=%s\nOPENWEBUI_PORT=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$agentgateway_ui_port" "$openwebui_port" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$OLLAMA_COMPOSE_PROFILES" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -588,6 +850,39 @@ install_codebase_memory() {
   [[ -x "$CBM_BIN" ]] || fail "Executável não encontrado após a instalação: ${CBM_BIN}"
 }
 
+install_container_codebase_memory_command() {
+  local docker_arch archive temporary_dir expected_checksum actual_checksum
+  docker_arch="$(docker info --format '{{.Architecture}}')"
+  case "$docker_arch" in
+    arm64|aarch64) docker_arch='arm64' ;;
+    amd64|x86_64) docker_arch='amd64' ;;
+    *) fail "Arquitetura do Docker não suportada: ${docker_arch}" ;;
+  esac
+
+  archive="codebase-memory-mcp-ui-linux-${docker_arch}-portable.tar.gz"
+  temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/cbm-container-bin.XXXXXX")"
+  curl -fsSL "${RELEASE_DOWNLOAD_URL}/${archive}" -o "${temporary_dir}/${archive}"
+  curl -fsSL "${RELEASE_DOWNLOAD_URL}/checksums.txt" -o "${temporary_dir}/checksums.txt"
+  expected_checksum="$(awk -v archive="$archive" '$2 == archive { print $1; exit }' "${temporary_dir}/checksums.txt")"
+  [[ -n "$expected_checksum" ]] || fail "Checksum não encontrado para ${archive}."
+  actual_checksum="$(shasum -a 256 "${temporary_dir}/${archive}" | awk '{ print $1 }')"
+  [[ "$actual_checksum" == "$expected_checksum" ]] || fail "Checksum inválido para ${archive}."
+  tar -xzf "${temporary_dir}/${archive}" -C "$temporary_dir"
+  [[ -f "${temporary_dir}/codebase-memory-mcp" ]] || fail "Binário Linux não encontrado em ${archive}."
+  install -m 755 "${temporary_dir}/codebase-memory-mcp" "$CBM_CONTAINER_BIN"
+  rm -rf "$temporary_dir"
+}
+
+install_container_codebase_memory() {
+  if [[ "$SYSTEM_PLATFORM" != macos ]]; then
+    CBM_CONTAINER_BIN="$CBM_BIN"
+    return
+  fi
+  CBM_CONTAINER_BIN="${DATA_DIR}/bin/codebase-memory-mcp"
+  run_step "Instalando o binário Linux do Codebase Memory para os containers" install_container_codebase_memory_command
+  [[ -x "$CBM_CONTAINER_BIN" ]] || fail "Executável dos containers não encontrado: ${CBM_CONTAINER_BIN}"
+}
+
 configure_codebase_memory_command() {
   set -a
   # shellcheck disable=SC1090
@@ -600,6 +895,10 @@ configure_codebase_memory_command() {
 docker_compose() {
   local -a compose_files=(-f "${BASE_DIR}/compose.yaml")
   [[ ! -f "$GPU_COMPOSE_FILE" ]] || compose_files+=(-f "$GPU_COMPOSE_FILE")
+  if [[ "$SYSTEM_PLATFORM" == macos || "$(uname -s)" == Darwin ]]; then
+    docker compose "${compose_files[@]}" "$@"
+    return
+  fi
   if docker info >/dev/null 2>&1; then
     docker compose "${compose_files[@]}" "$@"
   else
@@ -614,8 +913,13 @@ start_admin_panel_command() {
   # antes de o agentgateway-ready verificar o listener MCP.
   if ! docker_compose up -d --build --force-recreate; then
     docker_compose ps -a
-    docker_compose logs --tail=200 \
-      agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui ollama docling open-webui openwebui-bootstrap
+    if [[ "$OLLAMA_RUNTIME" == docker ]]; then
+      docker_compose logs --tail=200 \
+        agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui ollama docling open-webui openwebui-bootstrap
+    else
+      docker_compose logs --tail=200 \
+        agentgateway-config agentgateway agentgateway-ready admin proxy graph-ui docling open-webui openwebui-bootstrap
+    fi
     return 1
   fi
   # O nginx.conf é bind-mounted. Alterá-lo não faz o Compose recriar o
@@ -813,7 +1117,11 @@ validate_openwebui_command() {
   openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   docker_compose wait openwebui-bootstrap
   curl -fsS "http://127.0.0.1:${openwebui_port}/health" >/dev/null || {
-    docker_compose logs --tail=200 ollama docling open-webui openwebui-bootstrap
+    if [[ "$OLLAMA_RUNTIME" == docker ]]; then
+      docker_compose logs --tail=200 ollama docling open-webui openwebui-bootstrap
+    else
+      docker_compose logs --tail=200 docling open-webui openwebui-bootstrap
+    fi
     return 1
   }
 }
@@ -821,7 +1129,7 @@ validate_openwebui_command() {
 validate_ollama_gpu_command() {
   local visible_uuids device_id
   local -a expected_devices=()
-  [[ "$OLLAMA_GPU_MODE" != cpu ]] || return 0
+  [[ "$OLLAMA_RUNTIME" == docker && "$OLLAMA_GPU_MODE" != cpu ]] || return 0
   visible_uuids="$(docker_compose exec -T ollama nvidia-smi --query-gpu=uuid --format=csv,noheader | sed '/^[[:space:]]*$/d' | paste -sd, - | tr -d '[:space:]')"
   [[ -n "$visible_uuids" ]] || {
     docker_compose logs --tail=200 ollama
@@ -948,15 +1256,17 @@ validate_installation_command() {
 }
 
 show_summary() {
-  local ui_port agentgateway_ui_port openwebui_port ollama_acceleration
+  local ui_port agentgateway_ui_port openwebui_port ollama_acceleration ollama_execution
   ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   agentgateway_ui_port="$(sed -n 's/^AGENTGATEWAY_UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   openwebui_port="$(sed -n 's/^OPENWEBUI_PORT=//p' "$ENV_FILE" | tail -n 1)"
   case "$OLLAMA_GPU_MODE" in
     all) ollama_acceleration='todas as GPUs NVIDIA' ;;
     selected) ollama_acceleration="GPUs ${OLLAMA_GPU_DEVICE_IDS}" ;;
+    metal) ollama_acceleration='aceleração nativa Apple (Metal)' ;;
     *) ollama_acceleration='CPU' ;;
   esac
+  [[ "$OLLAMA_RUNTIME" == host ]] && ollama_execution='host macOS' || ollama_execution='Docker'
   printf "\n${COLOR_GREEN}${COLOR_BOLD}✔ Instalação concluída${COLOR_RESET}\n\n"
   printf '  Repositórios : %s\n' "$REPOSITORIES_DIR"
   printf '  Cache        : %s\n' "$CACHE_DIR"
@@ -965,6 +1275,7 @@ show_summary() {
   printf '  Executável   : %s\n' "$CBM_BIN"
   printf '  E-mail admin : %s\n' "$ADMIN_EMAIL"
   printf '  Modelo Ollama: %s\n' "$OLLAMA_CHAT_MODEL"
+  printf '  Execução     : %s\n' "$ollama_execution"
   printf '  Aceleração   : %s\n' "$ollama_acceleration"
   printf '\nConfiguração: auto_index=false, auto_watch=true\n'
   printf '\nUI oficial do Codebase Memory:\n  http://<IP-ou-dominio>:%s/\n' "$ui_port"
@@ -981,6 +1292,7 @@ main() {
   printf "${COLOR_BOLD}Configuração inicial${COLOR_RESET}\n"
   info "Responda agora às perguntas necessárias. Depois disso, a instalação seguirá sem interrupções."
   ask_memory_budget
+  ask_ollama_runtime
   ask_ollama_model
   ask_ollama_gpu
   ask_proxy_access
@@ -988,19 +1300,21 @@ main() {
   keep_sudo_alive
   success "Configuração concluída; iniciando instalação não interativa"
   install_dependencies
-  if [[ "$OLLAMA_GPU_MODE" != cpu ]]; then
+  install_host_ollama
+  if [[ "$OLLAMA_RUNTIME" == docker && "$OLLAMA_GPU_MODE" != cpu ]]; then
     run_step "Configurando o runtime NVIDIA no Docker" configure_nvidia_runtime_command
   fi
   create_local_structure
   write_ollama_gpu_compose_override
   configure_google_drive_sync
   create_proxy_credentials
-  create_environment_file
   install_codebase_memory
+  install_container_codebase_memory
+  create_environment_file
   run_step "Aplicando configurações do Codebase Memory" configure_codebase_memory_command
   run_step "Validando a instalação" validate_installation_command
   run_step "Construindo e iniciando o painel administrativo" start_admin_panel_command
-  if [[ "$OLLAMA_GPU_MODE" != cpu ]]; then
+  if [[ "$OLLAMA_RUNTIME" == docker && "$OLLAMA_GPU_MODE" != cpu ]]; then
     run_step "Validando o acesso do Ollama às GPUs" validate_ollama_gpu_command
   fi
   run_step "Aguardando o painel ficar disponível" validate_admin_panel_command
