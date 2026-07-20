@@ -53,6 +53,11 @@ modal.addEventListener('close', () => {
   $('#modal-content').replaceChildren();
 });
 modal.querySelector('form').addEventListener('submit', event => {
+  if (event.submitter?.value === 'cancel') {
+    event.preventDefault();
+    closeModal();
+    return;
+  }
   const action = document.activeElement?.dataset.enterAction || modal.dataset.submitAction;
   if (!action) return;
   event.preventDefault();

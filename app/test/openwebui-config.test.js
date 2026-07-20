@@ -225,6 +225,8 @@ test('painel confirma workspace com Enter e permite indexar o workspace aberto',
     readFile(path.join(root, 'app/src/server.js'), 'utf8')
   ]);
   assert.match(browser, /modal\.querySelector\('form'\)\.addEventListener\('submit'/);
+  assert.match(browser, /event\.submitter\?\.value === 'cancel'/);
+  assert.match(browser, /closeModal\(\);/);
   assert.match(browser, /newWorkspaceModal[\s\S]*'save-workspace'/);
   for (const action of ['save-schedule', 'save-drive-picker', 'save-drive-credentials', 'save-knowledge-sync', 'save-mcp-user', 'save-mcp-access', 'save-github', 'clone-selected']) {
     assert.match(browser, new RegExp(`openModal\\([^;]+, '${action}'\\)`), `Enter deve acionar ${action}`);
