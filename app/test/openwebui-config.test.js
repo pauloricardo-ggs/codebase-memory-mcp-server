@@ -126,6 +126,10 @@ test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e 
   assert.match(nginx, /location = \/mcp/);
   assert.match(nginx, /location = \/admin\/api\/auth\/login \{[\s\S]*proxy_set_header X-Forwarded-Host \$http_host/);
   assert.match(nginx, /location \/admin\/ \{[\s\S]*proxy_set_header X-Forwarded-Host \$http_host/);
+  assert.match(nginx, /map \$uri \$public_rate_limit_key \{/);
+  assert.match(nginx, /~\^\/\(\?:_app\|static\)\/ "";/);
+  assert.match(nginx, /limit_req_zone \$public_rate_limit_key zone=public_per_ip/);
+  assert.doesNotMatch(nginx, /limit_req_zone \$binary_remote_addr zone=public_per_ip/);
   assert.doesNotMatch(nginx, /proxy_set_header (?:Host|X-Forwarded-Host) \$host;/);
   assert.doesNotMatch(nginx, /auth_basic|mcp-panel|listen 8081/);
   assert.match(install, /PUBLIC_BASE_URL=%s/);
@@ -170,8 +174,12 @@ test('presets de exemplo selecionam o padrão e carregam parâmetros e integraç
   assert.deepEqual(manifest.models[1].meta.toolIds, ['server:mcp:mcp-admin']);
   assert.match(manifest.models[0].params.system, /fontes divergirem/);
   assert.match(manifest.models[0].params.system, /filesystem virtual e isolado/);
-  assert.match(manifest.models[0].params.system, /tree ou ls -a/);
-  assert.match(manifest.models[0].params.system, /nunca conclua que a base está vazia depois de apenas um ls/);
+  assert.match(manifest.models[0].params.system, /PROTOCOLO OBRIGATÓRIO PARA LOCALIZAR ARQUIVOS/);
+  assert.match(manifest.models[0].params.system, /Nunca execute grep com `\*` como primeira busca/);
+  assert.match(manifest.models[0].params.system, /execute `tree -a` na raiz da KB/);
+  assert.match(manifest.models[0].params.system, /não percorre subpastas/);
+  assert.match(manifest.models[0].params.system, /REGRA OBRIGATÓRIA PARA CAMINHOS/);
+  assert.match(manifest.models[0].params.system, /Nunca envie um caminho sem aspas/);
   assert.match(manifest.models[0].params.system, /query_knowledge_files/);
   assert.match(manifest.models[0].params.system, /Google Drive \(gerenciado\)/);
   assert.match(manifest.models[1].params.system, /acesso administrativo total/);
