@@ -162,6 +162,65 @@ response = {
   }
 });
 
+test('imagem derivada publica citações do Drive como links diretos e seguros', async () => {
+  const [dockerfile, frontendPatch, backendPatch, knowledgeFsPatch] = await Promise.all([
+    readFile(path.join(root, 'openwebui/Dockerfile'), 'utf8'),
+    readFile(path.join(root, 'openwebui/patch-openwebui-citations.mjs'), 'utf8'),
+    readFile(path.join(root, 'openwebui/patch-google-drive-citations.py'), 'utf8'),
+    readFile(path.join(root, 'openwebui/patch-knowledge-fs.py'), 'utf8')
+  ]);
+  assert.match(dockerfile, /OPENWEBUI_COMMIT=ecd48e2f718220a6400ecf49eafd4867a38feb10/);
+  assert.match(dockerfile, /NODE_OPTIONS=--max-old-space-size=4096/);
+  assert.match(dockerfile, /npm run pyodide:fetch/);
+  assert.match(dockerfile, /node_modules\/\.bin\/vite build/);
+  assert.match(dockerfile, /COPY --from=citation-frontend \/src\/build \/app\/build/);
+  assert.match(dockerfile, /google_drive_citations\.py/);
+  assert.match(frontendPatch, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);
+  assert.match(frontendPatch, /WEBUI_API_BASE_URL/);
+  assert.match(frontendPatch, /metadata\?\.name \?\? _source\?\.name \?\? id/);
+  assert.match(frontendPatch, /renderização do modal/);
+  assert.match(backendPatch, /get_file_citation_metadata/);
+  assert.match(backendPatch, /metadata final salvo no banco vetorial/);
+  assert.match(backendPatch, /get_chunk_citation_metadata/);
+  assert.match(backendPatch, /display_name = chunk\.get\('name'\) or source_name/);
+  assert.match(backendPatch, /tool_function_name == 'kb_exec'/);
+  assert.match(backendPatch, /await get_kb_exec_citation_sources/);
+  assert.match(dockerfile, /python \/tmp\/patch-knowledge-fs\.py/);
+  assert.match(dockerfile, /python \/tmp\/test-knowledge-fs-patch\.py/);
+  assert.match(knowledgeFsPatch, /candidate\['id'\] in ref_parts/);
+  assert.match(knowledgeFsPatch, /path=.*file_id=/);
+  assert.match(knowledgeFsPatch, /get_kb_exec_citation_sources/);
+  assert.match(knowledgeFsPatch, /ID e caminho canônico no tree -a/);
+  assert.match(knowledgeFsPatch, /unicodedata\.normalize\('NFC'/);
+
+  const helper = path.join(root, 'openwebui/google_drive_citations.py');
+  const python = `
+import importlib.util, json, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('google_drive_citations', ${JSON.stringify(helper)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+class File:
+    def __init__(self, filename, meta):
+        self.filename = filename
+        self.meta = meta
+cases = [
+    File('Documento.txt', {'data': {'source': 'google-drive', 'original_name': 'Documento', 'source_url': 'https://docs.google.com/document/d/abc/edit'}}),
+    File('Legado.txt', {'data': {'source': 'google-drive', 'source_name': 'Documento legado', 'source_url': 'https://drive.google.com/open?id=abc'}}),
+    File('manual.pdf', {'data': {'source': 'manual', 'original_name': 'Falso', 'source_url': 'https://docs.google.com/document/d/abc/edit'}}),
+    File('Documento.txt', {'data': {'source': 'google-drive', 'original_name': 'Documento', 'source_url': 'https://example.com/phishing'}}),
+]
+print(json.dumps([module.get_file_citation_metadata(item) for item in cases]))
+`;
+  const { stdout } = await execFileAsync('python3', ['-c', python]);
+  assert.deepEqual(JSON.parse(stdout), [
+    { name: 'Documento', source: 'https://docs.google.com/document/d/abc/edit' },
+    { name: 'Documento legado', source: 'https://drive.google.com/open?id=abc' },
+    { name: 'manual.pdf', source: 'manual.pdf' },
+    { name: 'Documento', source: 'Documento.txt' }
+  ]);
+});
+
 test('presets de exemplo selecionam o padrão e carregam parâmetros e integrações esperados', async () => {
   const manifest = JSON.parse(await readFile(path.join(root, 'openwebui/bootstrap/models.json'), 'utf8'));
   assert.deepEqual(manifest.models.map(model => model.id), ['business-model-sample', 'code-model-sample']);

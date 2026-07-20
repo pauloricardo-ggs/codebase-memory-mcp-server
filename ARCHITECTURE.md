@@ -46,6 +46,24 @@ Google Drive ──► knowledge-sync ──► Open WebUI
 7. O reranker `BAAI/bge-reranker-v2-m3` ordena até 20 candidatos e mantém até 8 resultados.
 8. Os melhores trechos, metadados e citações são enviados ao modelo de chat.
 
+### Citações canônicas do Google Drive
+
+Para arquivos sincronizados, o `knowledge-sync` solicita o `webViewLink` fornecido pela API do Drive e o envia ao Open WebUI junto com o nome original. O arquivo exportado (`.txt`, `.csv` ou `.pdf`) continua sendo a representação interna usada por Docling e pelos embeddings, mas os chunks registram o documento do Drive como fonte canônica.
+
+Ao clicar no marcador ou na lista de fontes, o frontend exibe o nome original como rótulo e abre o arquivo original em uma nova aba, sem expor o URL como texto nem exibir o modal técnico de chunks e scores. O link não contém credenciais da Service Account: o Google valida a conta ativa no navegador e as permissões próprias do usuário. Uploads manuais e fontes sem URL canônica mantêm o endpoint interno do Open WebUI como fallback.
+
+Somente URLs HTTPS retornadas nos hosts `docs.google.com` e `drive.google.com` são aceitas como fontes do Drive. A versão do metadata da citação é persistida por arquivo; depois desta funcionalidade ser instalada, uma reconciliação completa reenvia automaticamente uma única vez os arquivos antigos que ainda não possuem a versão atual.
+
+A abertura no trecho exato não é garantida. O pipeline preserva páginas quando o extrator as fornece, mas Google Docs, Sheets e Slides exigem identificadores estruturais que as exportações atuais em texto ou CSV não mantêm.
+
+### Leitura pelo filesystem virtual da Knowledge Base
+
+O comando `tree -a` do `kb_exec` apresenta cada arquivo no formato explícito `path="..." file_id="..."`, evitando que o modelo interprete o ID como um diretório do caminho. Tanto o valor completo de `path` quanto o `file_id`, usados separadamente, são referências válidas para comandos como `cat`, `grep`, `head` e `sed`.
+
+Como tolerância a caminhos reconstruídos pelo modelo, o resolvedor normaliza caracteres Unicode, aceita um caminho sem os diretórios ancestrais e remove um `file_id` inserido acidentalmente como segmento. Essas correções só são aplicadas quando o resultado identifica exatamente um arquivo acessível. Se houver dois resultados possíveis, a leitura é recusada e os IDs e caminhos completos são retornados. Essa tolerância não amplia acesso: a busca permanece limitada às Knowledge Bases autorizadas para o usuário.
+
+Quando `kb_exec` executa um comando que lê conteúdo, o middleware resolve novamente somente as referências explícitas do comando e publica os arquivos encontrados como fontes da resposta. Comandos meramente exploratórios, como `tree`, `ls` e `find`, não geram citações. Assim, uma resposta baseada em `cat`, `head`, `tail`, `sed`, `grep`, `wc` ou `stat` mantém origem mesmo sem uma chamada adicional a `query_knowledge_files`.
+
 ### OCR adaptativo
 
 A configuração usa:

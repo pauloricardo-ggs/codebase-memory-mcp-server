@@ -66,7 +66,7 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     if (url.pathname === '/drive/v3/changes') {
       const changed = Number(url.searchParams.get('pageToken')) < driveRevision;
       response.end(JSON.stringify({
-        changes: changed ? [{ fileId: 'file-A', file: { id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false } }] : [],
+        changes: changed ? [{ fileId: 'file-A', file: { id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false, webViewLink: 'https://drive.google.com/file/d/file-A/view' } }] : [],
         newStartPageToken: String(driveRevision)
       }));
       return;
@@ -82,7 +82,7 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       return;
     }
     if (url.pathname === '/drive/v3/files/file-A') {
-      response.end(JSON.stringify({ id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false }));
+      response.end(JSON.stringify({ id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false, webViewLink: 'https://drive.google.com/file/d/file-A/view' }));
       return;
     }
     if (url.pathname === '/drive/v3/files/file-B' && url.searchParams.get('alt') === 'media') {
@@ -94,10 +94,10 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
       const query = url.searchParams.get('q') || '';
       if (query.includes("'folder-A' in parents")) {
         folderScans += 1;
-        response.end(JSON.stringify({ files: [{ id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false }] }));
+        response.end(JSON.stringify({ files: [{ id: 'file-A', name: 'manual.txt', mimeType: 'text/plain', modifiedTime, size: String(fileContent.length), parents: ['folder-A'], trashed: false, webViewLink: 'https://drive.google.com/file/d/file-A/view' }] }));
       } else if (query.includes("'folder-B' in parents")) {
         folderScans += 1;
-        response.end(JSON.stringify({ files: [{ id: 'file-B', name: 'base-b.txt', mimeType: 'text/plain', modifiedTime: '2026-01-03T00:00:00Z', size: '17', parents: ['folder-B'], trashed: false }] }));
+        response.end(JSON.stringify({ files: [{ id: 'file-B', name: 'base-b.txt', mimeType: 'text/plain', modifiedTime: '2026-01-03T00:00:00Z', size: '17', parents: ['folder-B'], trashed: false, webViewLink: 'https://drive.google.com/file/d/file-B/view' }] }));
       } else {
         response.end(JSON.stringify({ files: [
           { id: 'folder-A', name: 'Pasta A', mimeType: 'application/vnd.google-apps.folder', parents: [], trashed: false },
@@ -262,6 +262,8 @@ test('worker mantém arquivos de uma pasta dentro da Knowledge Base vinculada', 
     assert.match(uploads[0], /"knowledge_id":"kb-A"/);
     assert.match(uploads[0], /manual\.txt/);
     assert.match(uploads[0], /"source":"google-drive"/);
+    assert.match(uploads[0], /"source_url":"https:\/\/drive\.google\.com\/file\/d\/file-A\/view"/);
+    assert.match(uploads[0], /"original_name":"manual\.txt"/);
     const managed = await fetch(`${workerUrl}/api/targets/kb-A/files`, { headers }).then(value => value.json());
     assert.equal(managed.files.length, 1);
     assert.equal(managed.files[0].status, 'indexed');

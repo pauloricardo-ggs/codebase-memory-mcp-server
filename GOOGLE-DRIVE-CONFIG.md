@@ -97,6 +97,10 @@ Use **Pausar** para interromper novas verificações sem remover conteúdo. A a�
 
 Cada vínculo é isolado pelo ID da Knowledge Base. Arquivos da Pasta A enviados para a Base A não entram na Base B. Dentro da base, o worker cria a estrutura `Google Drive (gerenciado)/<pasta>--<id>/` e registra somente os arquivos que ele próprio enviou. Exclusões no Drive removem apenas esses arquivos gerenciados; uploads manuais são preservados.
 
+As citações desses arquivos abrem diretamente o documento original usando o `webViewLink` retornado pelo Drive. O acesso é avaliado pelo Google com a conta ativa no navegador: compartilhar a pasta apenas com a Service Account permite a sincronização, mas não concede acesso aos usuários finais. Compartilhe os documentos também com os usuários, grupos ou domínio que devem abrir as fontes. Arquivos configurados como “qualquer pessoa com o link” seguem essa política mais ampla do próprio Drive.
+
+Depois de atualizar uma instalação que ainda possua citações internas, a primeira sincronização ignora o atalho incremental e reprocessa uma vez os arquivos gerenciados para gravar a URL canônica. O conteúdo original no Drive não é alterado.
+
 Quando mais de uma base vence no mesmo horário, o worker processa os vínculos sequencialmente. Isso evita que várias extrações Docling e indexações concorram por CPU e memória. A ação **Sincronizar agora** usa a mesma fila.
 
 O scheduler tolera reinícios: se o worker estiver indisponível no minuto exato, executará o último slot pendente quando voltar. O estado persistido impede a repetição do mesmo slot. Instalações antigas com intervalo de 60 minutos são migradas automaticamente para `30 * * * *`.

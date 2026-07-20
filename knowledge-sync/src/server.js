@@ -17,6 +17,7 @@ const DEFAULT_SYNC_TIMEZONE = process.env.KNOWLEDGE_SYNC_TIMEZONE || 'America/Ma
 const HISTORY_LIMIT = 200;
 const FULL_RECONCILIATION_HOURS = Math.max(1, Number.parseInt(process.env.KNOWLEDGE_SYNC_FULL_RECONCILIATION_HOURS || '168', 10) || 168);
 const HTTP_RETRY_ATTEMPTS = Math.max(1, Math.min(6, Number.parseInt(process.env.KNOWLEDGE_SYNC_HTTP_RETRY_ATTEMPTS || '3', 10) || 3));
+const CITATION_METADATA_VERSION = 1;
 
 await mkdir(DATA_DIR, { recursive: true });
 const apiToken = (await readFile(API_TOKEN_FILE, 'utf8')).trim();
@@ -206,7 +207,7 @@ async function listDriveFiles(query, orderBy = 'name') {
       pageSize: '1000',
       orderBy,
       spaces: 'drive',
-      fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed)',
+      fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed,webViewLink)',
       supportsAllDrives: 'true',
       includeItemsFromAllDrives: 'true'
     });
@@ -220,7 +221,7 @@ async function listDriveFiles(query, orderBy = 'name') {
 }
 
 async function getDriveFile(id) {
-  const params = new URLSearchParams({ fields: 'id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed', supportsAllDrives: 'true' });
+  const params = new URLSearchParams({ fields: 'id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed,webViewLink', supportsAllDrives: 'true' });
   const response = await google(`/drive/v3/files/${encodeURIComponent(id)}?${params}`);
   return response.json();
 }
@@ -257,7 +258,8 @@ const GOOGLE_EXPORTS = new Map([
 function downloadableFile(file, relativePath, rootFolder) {
   const googleExport = GOOGLE_EXPORTS.get(file.mimeType);
   if (file.mimeType.startsWith('application/vnd.google-apps.') && !googleExport) return null;
-  let filename = sanitizeDriveName(file.name, file.id);
+  const originalName = sanitizeDriveName(file.name, file.id);
+  let filename = originalName;
   if (googleExport?.extension && !filename.toLowerCase().endsWith(googleExport.extension)) filename += googleExport.extension;
   return {
     sourceKey: `${rootFolder.id}:${file.id}`,
@@ -265,6 +267,8 @@ function downloadableFile(file, relativePath, rootFolder) {
     folderId: rootFolder.id,
     path: relativePath,
     filename,
+    originalName,
+    canonicalUrl: typeof file.webViewLink === 'string' ? file.webViewLink : null,
     mimeType: file.mimeType,
     exportMime: googleExport?.mime || null,
     checksum: fileChecksum(file),
@@ -311,7 +315,7 @@ async function listDriveChanges(pageToken) {
       includeRemoved: 'true',
       supportsAllDrives: 'true',
       includeItemsFromAllDrives: 'true',
-      fields: 'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed))'
+      fields: 'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed,webViewLink))'
     });
     const response = await google(`/drive/v3/changes?${params}`);
     const payload = await response.json();
@@ -467,6 +471,8 @@ async function uploadFile(target, entry, content, directoryId) {
     source: 'google-drive',
     drive_file_id: entry.driveFileId,
     drive_folder_id: entry.folderId,
+    source_url: entry.canonicalUrl,
+    original_name: entry.originalName,
     managed_path: entry.managedPath,
     modified_time: entry.modifiedTime,
     ingested_at: new Date().toISOString()
@@ -498,7 +504,15 @@ function recordHistory(target, run) {
 
 async function processManifestEntry(target, entry, counters, operationId, force = false) {
   const previous = target.files[entry.sourceKey];
-  if (!force && previous?.fileId && previous.status !== 'failed' && previous.checksum === entry.checksum && previous.managedPath === entry.managedPath && previous.filename === entry.filename) {
+  if (!force
+    && previous?.fileId
+    && previous.status !== 'failed'
+    && previous.checksum === entry.checksum
+    && previous.managedPath === entry.managedPath
+    && previous.filename === entry.filename
+    && previous.originalName === entry.originalName
+    && previous.canonicalUrl === entry.canonicalUrl
+    && previous.citationMetadataVersion === CITATION_METADATA_VERSION) {
     previous.modifiedTime = entry.modifiedTime;
     previous.size = entry.size;
     counters.unchanged += 1;
@@ -518,6 +532,9 @@ async function processManifestEntry(target, entry, counters, operationId, force 
       checksum: entry.checksum,
       managedPath: entry.managedPath,
       filename: entry.filename,
+      originalName: entry.originalName,
+      canonicalUrl: entry.canonicalUrl,
+      citationMetadataVersion: CITATION_METADATA_VERSION,
       mimeType: entry.mimeType,
       exportMime: entry.exportMime,
       modifiedTime: entry.modifiedTime,
@@ -554,6 +571,8 @@ async function processManifestEntry(target, entry, counters, operationId, force 
       checksum: entry.checksum,
       managedPath: entry.managedPath,
       filename: entry.filename,
+      originalName: entry.originalName,
+      canonicalUrl: entry.canonicalUrl,
       mimeType: entry.mimeType,
       exportMime: entry.exportMime,
       modifiedTime: entry.modifiedTime,
@@ -587,8 +606,10 @@ async function executeTarget(target, trigger) {
   gauge('drive_sync_queue_size', queued.size);
   log('info', 'sync_started', { operationId, knowledgeBaseId: target.knowledgeBaseId, trigger });
   try {
-    const hasFailedFiles = Object.values(target.files || {}).some(file => file.status === 'failed');
-    if (target.changePageToken && !hasFailedFiles && !fullReconciliationDue(target, new Date(), FULL_RECONCILIATION_HOURS)) {
+    const managedFiles = Object.values(target.files || {});
+    const hasFailedFiles = managedFiles.some(file => file.status === 'failed');
+    const hasOutdatedCitationMetadata = managedFiles.some(file => file.citationMetadataVersion !== CITATION_METADATA_VERSION);
+    if (target.changePageToken && !hasFailedFiles && !hasOutdatedCitationMetadata && !fullReconciliationDue(target, new Date(), FULL_RECONCILIATION_HOURS)) {
       try {
         const changeSet = await timed('drive_changes_scan_duration_seconds', {}, () => listDriveChanges(target.changePageToken));
         if (!changesAffectTarget(target, changeSet.changes)) {

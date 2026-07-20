@@ -11,6 +11,8 @@ Ambiente autogerenciado para disponibilizar repositórios a clientes MCP e mante
 - embeddings multilíngues com `bge-m3` e reranking;
 - extração de documentos, OCR adaptativo e tabelas com Docling em CPU;
 - sincronização incremental Drive → Knowledge Base por cron;
+- citações do Drive abrem diretamente o arquivo original, respeitando a conta Google e as permissões do usuário;
+- `kb_exec` expõe IDs e caminhos canônicos e tolera caminhos abreviados não ambíguos;
 - reprocessamento seletivo, histórico por arquivo e detecção incremental via Drive Changes API;
 - health detalhado, métricas Prometheus e Grafana instalados por padrão;
 - runner versionável para avaliação do RAG documental;
