@@ -1215,11 +1215,34 @@ validate_agentgateway_command() {
 
   docker_compose exec -T admin node --input-type=module -e '
     const { readFile } = await import("node:fs/promises");
+    const http = await import("node:http");
     const systemToken = (await readFile("/data/app/secrets/mcp-system-token", "utf8")).trim();
     if (!systemToken) throw new Error("Token MCP do sistema não foi criado.");
     const mcpEndpoint = "http://proxy:8080/";
     const publicHost = process.env.MCP_PUBLIC_HOST;
     if (!publicHost) throw new Error("MCP_PUBLIC_HOST não foi configurado.");
+    const mcpFetch = (options = {}) => new Promise((resolve, reject) => {
+      const request = http.request(mcpEndpoint, {
+        method: options.method || "GET",
+        headers: { ...options.headers, host: publicHost }
+      }, response => {
+        const chunks = [];
+        response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => {
+          const payload = Buffer.concat(chunks).toString("utf8");
+          resolve({
+            ok: response.statusCode >= 200 && response.statusCode < 300,
+            status: response.statusCode,
+            headers: { get: name => response.headers[String(name).toLowerCase()] || null },
+            text: async () => payload
+          });
+        });
+      });
+      request.setTimeout(options.timeoutMs || 10000, () => request.destroy(new Error("Timeout ao validar o endpoint MCP.")));
+      request.on("error", reject);
+      if (options.body) request.write(options.body);
+      request.end();
+    });
     let lastError;
     for (let attempt = 1; attempt <= 30; attempt += 1) {
       let sessionId;
@@ -1235,30 +1258,28 @@ validate_agentgateway_command() {
             clientInfo: { name: "install-check", version: "1.0" }
           }
         });
-        const unauthenticated = await fetch(mcpEndpoint, {
+        const unauthenticated = await mcpFetch({
           method: "POST",
           headers: {
             accept: "application/json, text/event-stream",
-            "content-type": "application/json",
-            host: publicHost
+            "content-type": "application/json"
           },
           body: initializeBody,
-          signal: AbortSignal.timeout(5000)
+          timeoutMs: 5000
         });
         if (unauthenticated.status !== 401) {
           const body = await unauthenticated.text();
           throw new Error(`MCP aceitou chamada sem token: HTTP ${unauthenticated.status} ${body}`);
         }
-        const response = await fetch(mcpEndpoint, {
+        const response = await mcpFetch({
           method: "POST",
           headers: {
             accept: "application/json, text/event-stream",
             "content-type": "application/json",
-            authorization: `Bearer ${systemToken}`,
-            host: publicHost
+            authorization: `Bearer ${systemToken}`
           },
           body: initializeBody,
-          signal: AbortSignal.timeout(5000)
+          timeoutMs: 5000
         });
         const body = await response.text();
         if (response.ok && body.includes("\"result\"")) {
@@ -1268,10 +1289,9 @@ validate_agentgateway_command() {
             accept: "application/json, text/event-stream",
             "content-type": "application/json",
             authorization: `Bearer ${systemToken}`,
-            "mcp-session-id": sessionId,
-            host: publicHost
+            "mcp-session-id": sessionId
           };
-          await fetch(mcpEndpoint, {
+          await mcpFetch({
             method: "POST",
             headers,
             body: JSON.stringify({
@@ -1279,7 +1299,7 @@ validate_agentgateway_command() {
               method: "notifications/initialized",
               params: {}
             }),
-            signal: AbortSignal.timeout(5000)
+            timeoutMs: 5000
           });
 
           const requiredTools = new Set([
@@ -1297,7 +1317,7 @@ validate_agentgateway_command() {
           const advertisedTools = new Set();
           let cursor;
           do {
-            const listResponse = await fetch(mcpEndpoint, {
+            const listResponse = await mcpFetch({
               method: "POST",
               headers,
               body: JSON.stringify({
@@ -1306,7 +1326,7 @@ validate_agentgateway_command() {
                 method: "tools/list",
                 params: cursor ? { cursor } : {}
               }),
-              signal: AbortSignal.timeout(10000)
+              timeoutMs: 10000
             });
             const listBody = await listResponse.text();
             const dataLine = listBody.split("\n").find(line => line.startsWith("data:"));
@@ -1337,14 +1357,13 @@ validate_agentgateway_command() {
       } finally {
         if (sessionId) {
           try {
-            await fetch(mcpEndpoint, {
+            await mcpFetch({
               method: "DELETE",
               headers: {
                 authorization: `Bearer ${systemToken}`,
-                "mcp-session-id": sessionId,
-                host: publicHost
+                "mcp-session-id": sessionId
               },
-              signal: AbortSignal.timeout(5000)
+              timeoutMs: 5000
             });
           } catch {
             // A validação original é mais importante que uma falha de limpeza.

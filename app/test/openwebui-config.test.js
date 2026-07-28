@@ -138,6 +138,7 @@ test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e 
   assert.match(install, /GRAFANA_PUBLIC_URL=%s/);
   assert.match(install, /MCP_PUBLIC_URL=%s/);
   assert.match(install, /ask_public_urls/);
+  assert.match(install, /http\.request\(mcpEndpoint,[\s\S]*headers: \{ \.\.\.options\.headers, host: publicHost \}/);
 });
 
 test('imagem derivada lê as credenciais persistentes do Picker em tempo de execução', async () => {
