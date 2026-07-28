@@ -33,7 +33,7 @@ test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker permanente'
   assert.match(compose, /ollama-data:/);
   assert.match(compose, /openwebui-data:/);
   assert.match(compose, /context: \.\/openwebui/);
-  assert.match(compose, /image: codebase-memory-open-webui:0\.10\.2-google-drive-config/);
+  assert.match(compose, /image: codebase-memory-open-webui:0\.11\.0-google-drive-config/);
   assert.match(compose, /profiles: \["ollama-docker"\]/);
   assert.match(compose, /OLLAMA_BASE_URL: "\$\{OLLAMA_BASE_URL:-http:\/\/ollama:11434\}"/);
   assert.match(compose, /OLLAMA_URL: "\$\{OLLAMA_BASE_URL:-http:\/\/ollama:11434\}"/);
@@ -174,7 +174,8 @@ test('imagem derivada publica citações do Drive como links diretos e seguros',
     readFile(path.join(root, 'openwebui/patch-google-drive-citations.py'), 'utf8'),
     readFile(path.join(root, 'openwebui/patch-knowledge-fs.py'), 'utf8')
   ]);
-  assert.match(dockerfile, /OPENWEBUI_COMMIT=ecd48e2f718220a6400ecf49eafd4867a38feb10/);
+  assert.match(dockerfile, /OPENWEBUI_COMMIT=f9590b8017199e56d5e953657e6498e3cef1d246/);
+  assert.match(dockerfile, /FROM ghcr\.io\/open-webui\/open-webui:v0\.11\.0/);
   assert.match(dockerfile, /NODE_OPTIONS=--max-old-space-size=4096/);
   assert.match(dockerfile, /npm run pyodide:fetch/);
   assert.match(dockerfile, /node_modules\/\.bin\/vite build/);

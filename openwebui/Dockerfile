@@ -1,4 +1,4 @@
-ARG OPENWEBUI_COMMIT=ecd48e2f718220a6400ecf49eafd4867a38feb10
+ARG OPENWEBUI_COMMIT=f9590b8017199e56d5e953657e6498e3cef1d246
 
 FROM node:22-alpine3.20 AS citation-frontend
 ARG OPENWEBUI_COMMIT
@@ -14,7 +14,7 @@ COPY patch-openwebui-citations.mjs /tmp/patch-openwebui-citations.mjs
 RUN node /tmp/patch-openwebui-citations.mjs /src/src/lib/components/chat/Messages/Citations.svelte \
     && ./node_modules/.bin/vite build
 
-FROM ghcr.io/open-webui/open-webui:v0.10.2
+FROM ghcr.io/open-webui/open-webui:v0.11.0
 
 COPY patch-google-drive-runtime.py /tmp/patch-google-drive-runtime.py
 COPY patch-google-drive-citations.py /tmp/patch-google-drive-citations.py

@@ -173,7 +173,7 @@ services:
   open-webui:
     build:
       context: ./openwebui
-    image: codebase-memory-open-webui:0.10.2-google-drive-config
+    image: codebase-memory-open-webui:0.11.0-google-drive-config
     restart: unless-stopped
     depends_on:
       docling:
