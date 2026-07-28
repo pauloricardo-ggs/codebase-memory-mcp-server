@@ -173,7 +173,7 @@ async def get_kb_exec_citation_sources(
         sources.append(
             {
                 'source': source,
-                'document': [resolved.get('content', '')[:MAX_CAT_CHARS]],
+                'document': [resolved.get('content', '')[:KB_EXEC_MAX_OUTPUT_CHARS]],
                 'metadata': [
                     {
                         'file_id': resolved['id'],

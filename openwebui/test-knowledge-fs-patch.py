@@ -1,8 +1,12 @@
 import asyncio
 import importlib.util
+from pathlib import Path
 import sys
 import types
 import unicodedata
+
+
+backend_root = Path(sys.argv[1] if len(sys.argv) > 1 else '/app/backend')
 
 
 class Files:
@@ -11,17 +15,29 @@ class Files:
 
 files_module = types.ModuleType('open_webui.models.files')
 files_module.Files = Files
+env_module = types.ModuleType('open_webui.env')
+env_module.KB_EXEC_MAX_GREP_FILES = 100
+env_module.KB_EXEC_MAX_OUTPUT_CHARS = 100_000
+env_module.KNOWLEDGE_GREP_MAX_MATCHES = 100
+regex_module = types.ModuleType('regex')
+regex_module.IGNORECASE = 0
+regex_module.error = Exception
+fastapi_module = types.ModuleType('fastapi')
+fastapi_module.Request = type('Request', (), {})
 open_webui_module = types.ModuleType('open_webui')
 open_webui_module.__path__ = []
 models_module = types.ModuleType('open_webui.models')
 models_module.__path__ = []
 sys.modules['open_webui'] = open_webui_module
+sys.modules['open_webui.env'] = env_module
 sys.modules['open_webui.models'] = models_module
 sys.modules['open_webui.models.files'] = files_module
+sys.modules.setdefault('regex', regex_module)
+sys.modules.setdefault('fastapi', fastapi_module)
 
 citation_spec = importlib.util.spec_from_file_location(
     'open_webui.google_drive_citations',
-    '/app/backend/open_webui/google_drive_citations.py',
+    backend_root / 'open_webui/google_drive_citations.py',
 )
 citation_module = importlib.util.module_from_spec(citation_spec)
 citation_spec.loader.exec_module(citation_module)
@@ -29,7 +45,7 @@ sys.modules['open_webui.google_drive_citations'] = citation_module
 
 spec = importlib.util.spec_from_file_location(
     'knowledge_fs_patch_target',
-    '/app/backend/open_webui/tools/knowledge_fs.py',
+    backend_root / 'open_webui/tools/knowledge_fs.py',
 )
 knowledge_fs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(knowledge_fs)
