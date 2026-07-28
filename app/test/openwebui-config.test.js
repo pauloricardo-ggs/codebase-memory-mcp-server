@@ -314,6 +314,7 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   assert.match(compose, /OLLAMA_VERSION:-0\.32\.1/);
   assert.match(compose, /OLLAMA_CHAT_MODEL:-gemma4:e2b/);
   assert.match(install, /ask_ollama_model/);
+  assert.match(install, /ask_ollama_quantization/);
   assert.match(install, /ask_ollama_runtime/);
   assert.match(install, /brew" install ollama|BREW_BIN" install ollama/);
   assert.match(install, /host\.docker\.internal:11434/);
@@ -323,6 +324,7 @@ test('instalador sugere Gemma 4, fixa Ollama 0.32.1 e bootstrap usa o contrato a
   assert.match(install, /nvidia-smi --query-gpu=index,uuid,name,memory\.total/);
   assert.match(install, /nvidia-ctk runtime configure --runtime=docker/);
   assert.match(install, /write_ollama_gpu_compose_override/);
+  assert.match(install, /write_ollama_quantization_compose_override/);
   assert.match(install, /validate_ollama_gpu_command/);
   assert.doesNotMatch(install, /ask_google_drive_integration/);
   assert.doesNotMatch(install, /Deseja habilitar o Google Drive/);
@@ -416,6 +418,55 @@ test('seletor do Ollama oferece Gemma 4 Effective 4B e modelo personalizado', as
   }
 });
 
+test('seletor de quantização usa fp16 por padrão e preserva q8_0 na reinstalação', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-quantization-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    const selectionFile = path.join(temporaryRoot, 'selection');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      ask_ollama_quantization <<< $'\\n'
+      printf '%s\\n' "$OLLAMA_KV_CACHE_QUANTIZATION" >"$2"
+      printf 'OLLAMA_KV_CACHE_QUANTIZATION=q8_0\\n' >"$(dirname "$1")/.env"
+      ask_ollama_quantization <<< $'\\n'
+      printf '%s\\n' "$OLLAMA_KV_CACHE_QUANTIZATION" >>"$2"
+    `, 'test', path.join(temporaryRoot, 'install.sh'), selectionFile]);
+    assert.equal(await readFile(selectionFile, 'utf8'), 'fp16\nq8_0\n');
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('q8_0 adiciona Flash Attention e KV cache ao Compose; fp16 remove o override', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-quantization-compose-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      OLLAMA_RUNTIME=docker
+      OLLAMA_KV_CACHE_QUANTIZATION=q8_0
+      write_ollama_quantization_compose_override
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+    const override = await readFile(path.join(temporaryRoot, 'compose.ollama.yaml'), 'utf8');
+    assert.match(override, /^services:\n  ollama:\n    environment:/);
+    assert.match(override, /OLLAMA_FLASH_ATTENTION: "1"/);
+    assert.match(override, /OLLAMA_KV_CACHE_TYPE: q8_0/);
+
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      OLLAMA_RUNTIME=docker
+      OLLAMA_KV_CACHE_QUANTIZATION=fp16
+      write_ollama_quantization_compose_override
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+    await assert.rejects(readFile(path.join(temporaryRoot, 'compose.ollama.yaml')), { code: 'ENOENT' });
+
+    const compose = await readFile(path.join(root, 'compose.yaml'), 'utf8');
+    assert.doesNotMatch(compose, /OLLAMA_FLASH_ATTENTION|OLLAMA_KV_CACHE_TYPE/);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-version-install-'));
   try {
@@ -431,6 +482,7 @@ test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
     const environment = await readFile(path.join(temporaryRoot, '.env'), 'utf8');
     assert.match(environment, /^OLLAMA_VERSION=0\.31\.2$/m);
     assert.match(environment, /^OLLAMA_CHAT_MODEL=gemma4:e2b$/m);
+    assert.match(environment, /^OLLAMA_KV_CACHE_QUANTIZATION=fp16$/m);
     assert.match(environment, /^OLLAMA_RUNTIME=docker$/m);
     assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/ollama:11434$/m);
     assert.match(environment, /^COMPOSE_PROFILES=ollama-docker,monitoring$/m);
@@ -605,6 +657,7 @@ test('modo host registra um LaunchAgent persistente para o Ollama', async () => 
       export PATH="$3:$PATH"
       source "$1"
       OLLAMA_BIN=/usr/bin/true
+      OLLAMA_KV_CACHE_QUANTIZATION=q8_0
       configure_host_ollama_command
     `, 'test', path.join(temporaryRoot, 'install.sh'), temporaryRoot, binaryDirectory]);
 
@@ -615,6 +668,8 @@ test('modo host registra um LaunchAgent persistente para o Ollama', async () => 
     assert.match(launchAgent, /<string>com\.codebase-memory\.ollama<\/string>/);
     assert.match(launchAgent, /<string>\/usr\/bin\/true<\/string>/);
     assert.match(launchAgent, /<key>OLLAMA_HOST<\/key>\s*<string>0\.0\.0\.0:11434<\/string>/);
+    assert.match(launchAgent, /<key>OLLAMA_FLASH_ATTENTION<\/key>\s*<string>1<\/string>/);
+    assert.match(launchAgent, /<key>OLLAMA_KV_CACHE_TYPE<\/key>\s*<string>q8_0<\/string>/);
     assert.match(launchAgent, /<key>RunAtLoad<\/key>\s*<true\/>/);
     assert.match(launchAgent, /<key>KeepAlive<\/key>\s*<true\/>/);
   } finally {

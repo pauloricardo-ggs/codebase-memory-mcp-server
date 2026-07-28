@@ -24,6 +24,7 @@ WORKSPACE_TIMEZONE=America/Maceio
 REPOSITORY_SYNC_CONCURRENCY=3
 OLLAMA_VERSION=0.32.1
 OLLAMA_CHAT_MODEL=gemma4:e2b
+OLLAMA_KV_CACHE_QUANTIZATION=fp16
 OLLAMA_RUNTIME=docker
 OLLAMA_BASE_URL=http://ollama:11434
 COMPOSE_PROFILES=ollama-docker,monitoring
@@ -52,6 +53,7 @@ RAG_TOP_K_RERANKER=8
 | `WORKSPACE_TIMEZONE` | Fuso padrão dos agendamentos de repositórios e Drive. |
 | `REPOSITORY_SYNC_CONCURRENCY` | Sincronizações Git simultâneas, entre 1 e 20. |
 | `OLLAMA_CHAT_MODEL` | Modelo de chat baixado pelo instalador. |
+| `OLLAMA_KV_CACHE_QUANTIZATION` | Quantização do cache K/V: `fp16` (padrão) ou `q8_0`. |
 | `OLLAMA_RUNTIME` | `docker` ou `host` no macOS. |
 | `OLLAMA_GPU_MODE` | `cpu`, `all`, `selected` ou `metal`. |
 | `OLLAMA_GPU_DEVICE_IDS` | UUIDs NVIDIA separados por vírgula. |
@@ -63,6 +65,8 @@ RAG_TOP_K_RERANKER=8
 | `RAG_TOP_K_RERANKER` | Resultados mantidos depois do reranking. |
 
 Execute novamente `./install.sh` após alterações que exijam recriação dos serviços.
+
+Ao selecionar `q8_0`, o instalador gera `compose.ollama.yaml` com `OLLAMA_FLASH_ATTENTION=1` e `OLLAMA_KV_CACHE_TYPE=q8_0`. No modo host do macOS, os mesmos valores são adicionados ao LaunchAgent. A seleção `fp16` remove essas configurações e deixa o Ollama usar seu padrão, sem adicionar as duas variáveis ao serviço.
 
 ## GPU NVIDIA
 
@@ -145,6 +149,7 @@ codebase-memory-mcp-server/
 ├── data/                   # estado e segredos
 ├── repositories/           # clones por workspace
 ├── compose.yaml
+├── compose.ollama.yaml     # gerado quando q8_0 é selecionado
 ├── compose.gpu.yaml        # gerado quando necessário
 ├── install.sh
 └── .env

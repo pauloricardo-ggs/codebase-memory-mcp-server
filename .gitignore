@@ -9,5 +9,7 @@
 
 # Arquivos temporários do instalador
 .env.tmp
+compose.ollama.yaml
+compose.ollama.yaml.tmp
 compose.gpu.yaml
 compose.gpu.yaml.tmp
