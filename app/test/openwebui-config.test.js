@@ -659,7 +659,7 @@ test('instalador protege a credencial do Grafana e reutiliza o acesso administra
     const monitoringEnv = path.join(temporaryRoot, 'data/secrets/monitoring.env');
     assert.equal(
       await readFile(monitoringEnv, 'utf8'),
-      'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=senha-monitoramento\n'
+      'GF_SECURITY_ADMIN_USER=admin@example.com\nGF_SECURITY_ADMIN_PASSWORD=senha-monitoramento\nGF_SECURITY_ADMIN_EMAIL=admin@example.com\n'
     );
     if (process.platform !== 'win32') assert.equal((await stat(monitoringEnv)).mode & 0o777, 0o600);
     assert.equal(
@@ -682,7 +682,7 @@ test('instalador protege a credencial do Grafana e reutiliza o acesso administra
     `, 'test', path.join(temporaryRoot, 'install.sh')]);
     assert.equal(
       await readFile(monitoringEnv, 'utf8'),
-      'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=senha-monitoramento\n'
+      'GF_SECURITY_ADMIN_USER=admin@example.com\nGF_SECURITY_ADMIN_PASSWORD=senha-monitoramento\nGF_SECURITY_ADMIN_EMAIL=admin@example.com\n'
     );
     assert.notEqual(await readFile(path.join(temporaryRoot, 'data/secrets/admin-jwt-secret'), 'utf8'), firstJwtSecret);
     assert.equal(
@@ -794,6 +794,99 @@ test('reinstalação migra o administrador existente do Open WebUI sem recriar o
     assert.equal(
       await readFile(path.join(temporaryRoot, 'data/secrets/openwebui.env'), 'utf8'),
       'CUSTOM_OPENWEBUI_SETTING=preservar\nENABLE_GOOGLE_DRIVE_INTEGRATION=true\nGOOGLE_DRIVE_CLIENT_ID=cliente.apps.googleusercontent.com\nGOOGLE_DRIVE_API_KEY=api-key-preservada\nWEBUI_ADMIN_EMAIL=novo@example.com\nWEBUI_ADMIN_PASSWORD=senha-nova\nWEBUI_ADMIN_NAME=Admin\nWEBUI_SECRET_KEY=segredo-preservado\n'
+    );
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('reinstalação sincroniza usuário e senha do administrador persistido no Grafana', async () => {
+  const requests = [];
+  let currentUser = {
+    id: 1,
+    email: 'admin@localhost',
+    name: 'Admin',
+    login: 'admin',
+    theme: 'dark',
+    isGrafanaAdmin: true
+  };
+  let currentPassword = 'senha-antiga';
+  const server = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    const payload = raw ? JSON.parse(raw) : {};
+    const authorization = request.headers.authorization;
+    requests.push({ method: request.method, url: request.url, host: request.headers.host, authorization, payload });
+    response.setHeader('content-type', 'application/json');
+
+    const expectedAuthorization = `Basic ${Buffer.from(`${currentUser.login}:${currentPassword}`).toString('base64')}`;
+    if (authorization !== expectedAuthorization) {
+      response.statusCode = 401;
+      response.end('{"message":"Unauthorized"}');
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/api/user') {
+      response.end(JSON.stringify(currentUser));
+      return;
+    }
+    if (request.method === 'PUT' && request.url === '/api/admin/users/1/password') {
+      currentPassword = payload.password;
+      response.end('{"message":"User password updated"}');
+      return;
+    }
+    if (request.method === 'PUT' && request.url === '/api/users/1') {
+      currentUser = { ...currentUser, ...payload };
+      response.end('{"message":"User updated"}');
+      return;
+    }
+    response.statusCode = 404;
+    response.end('{}');
+  });
+
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-grafana-install-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await mkdir(path.join(temporaryRoot, 'data/secrets'), { recursive: true });
+    await writeFile(
+      path.join(temporaryRoot, '.env'),
+      `UI_PORT=${server.address().port}\nGRAFANA_PUBLIC_HOST=grafana.example.com\n`
+    );
+    await writeFile(
+      path.join(temporaryRoot, 'data/secrets/monitoring.env'),
+      'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=senha-antiga\n'
+    );
+
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      ADMIN_EMAIL="$TEST_NEW_EMAIL"
+      OPENWEBUI_DESIRED_PASSWORD="$TEST_NEW_PASSWORD"
+      sync_grafana_admin_command
+    `, 'test', path.join(temporaryRoot, 'install.sh')], {
+      env: {
+        ...process.env,
+        TEST_NEW_EMAIL: 'novo@example.com',
+        TEST_NEW_PASSWORD: 'senha-nova'
+      }
+    });
+
+    assert.deepEqual(requests.map(({ method, url, host }) => ({ method, url, host })), [
+      { method: 'GET', url: '/api/user', host: 'grafana.example.com' },
+      { method: 'PUT', url: '/api/admin/users/1/password', host: 'grafana.example.com' },
+      { method: 'PUT', url: '/api/users/1', host: 'grafana.example.com' },
+      { method: 'GET', url: '/api/user', host: 'grafana.example.com' }
+    ]);
+    assert.deepEqual(requests[1].payload, { password: 'senha-nova' });
+    assert.deepEqual(requests[2].payload, {
+      email: 'novo@example.com',
+      name: 'Admin',
+      login: 'novo@example.com',
+      theme: 'dark'
+    });
+    assert.equal(
+      await readFile(path.join(temporaryRoot, 'data/secrets/monitoring.env'), 'utf8'),
+      'GF_SECURITY_ADMIN_USER=novo@example.com\nGF_SECURITY_ADMIN_PASSWORD=senha-nova\nGF_SECURITY_ADMIN_EMAIL=novo@example.com\n'
     );
   } finally {
     await new Promise(resolve => server.close(resolve));

@@ -964,8 +964,9 @@ create_proxy_credentials() {
     monitoring_password="$(sed -n 's/^WEBUI_ADMIN_PASSWORD=//p' "$openwebui_env" | tail -n 1)"
     [[ -n "$monitoring_password" ]] || fail "Senha administrativa não encontrada para configurar o Grafana."
     {
-      printf 'GF_SECURITY_ADMIN_USER=%s\n' "$ADMIN_USERNAME"
+      printf 'GF_SECURITY_ADMIN_USER=%s\n' "$ADMIN_EMAIL"
       printf 'GF_SECURITY_ADMIN_PASSWORD=%s\n' "$monitoring_password"
+      printf 'GF_SECURITY_ADMIN_EMAIL=%s\n' "$ADMIN_EMAIL"
     } >"${monitoring_env}.tmp"
     chmod 600 "${monitoring_env}.tmp"
     mv "${monitoring_env}.tmp" "$monitoring_env"
@@ -1453,7 +1454,7 @@ restart_and_validate_knowledge_sync_command() {
 
 migrate_openwebui_admin_command() {
   local openwebui_env="${DATA_DIR}/secrets/openwebui.env"
-  local ui_port webui_secret auth_payload auth_response token user_id update_payload update_response
+  local ui_port openwebui_public_host webui_secret auth_payload auth_response token user_id update_payload update_response
 
   # Em uma instalação nova, o usuário já foi criado com a credencial desejada.
   if [[ -z "$OPENWEBUI_PREVIOUS_EMAIL" || -z "$OPENWEBUI_PREVIOUS_PASSWORD" ]]; then
@@ -1474,6 +1475,8 @@ migrate_openwebui_admin_command() {
   fi
 
   ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  openwebui_public_host="$(sed -n 's/^OPENWEBUI_PUBLIC_HOST=//p' "$ENV_FILE" | tail -n 1)"
+  [[ -n "$openwebui_public_host" ]] || openwebui_public_host='openwebui.localhost'
   auth_payload="$(jq -cn \
     --arg email "$OPENWEBUI_PREVIOUS_EMAIL" \
     --arg password "$OPENWEBUI_PREVIOUS_PASSWORD" \
@@ -1481,6 +1484,7 @@ migrate_openwebui_admin_command() {
   if ! auth_response="$(printf '%s' "$auth_payload" | curl -fsS \
     --max-time 30 \
     "http://127.0.0.1:${ui_port}/api/v1/auths/signin" \
+    -H "Host: ${openwebui_public_host}" \
     -H 'content-type: application/json' \
     --data-binary @-)"; then
     # Aceita também o estado em que o banco já foi alterado manualmente,
@@ -1492,6 +1496,7 @@ migrate_openwebui_admin_command() {
     auth_response="$(printf '%s' "$auth_payload" | curl -fsS \
       --max-time 30 \
       "http://127.0.0.1:${ui_port}/api/v1/auths/signin" \
+      -H "Host: ${openwebui_public_host}" \
       -H 'content-type: application/json' \
       --data-binary @-)"
   fi
@@ -1506,6 +1511,7 @@ migrate_openwebui_admin_command() {
   update_response="$(printf '%s' "$update_payload" | curl -fsS \
     --max-time 30 \
     "http://127.0.0.1:${ui_port}/api/v1/users/${user_id}/update" \
+    -H "Host: ${openwebui_public_host}" \
     -H "Authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     --data-binary @-)"
@@ -1522,6 +1528,94 @@ migrate_openwebui_admin_command() {
   ADMIN_PASSWORD=''
   OPENWEBUI_PREVIOUS_PASSWORD=''
   OPENWEBUI_DESIRED_PASSWORD=''
+}
+
+sync_grafana_admin_command() {
+  local monitoring_env="${DATA_DIR}/secrets/monitoring.env"
+  local ui_port grafana_public_host stored_user stored_password auth_user auth_password
+  local profile user_id theme password_payload update_payload verification
+
+  stored_user="$(sed -n 's/^GF_SECURITY_ADMIN_USER=//p' "$monitoring_env" | tail -n 1)"
+  stored_password="$(sed -n 's/^GF_SECURITY_ADMIN_PASSWORD=//p' "$monitoring_env" | tail -n 1)"
+  [[ -n "$stored_user" && -n "$stored_password" ]] \
+    || fail "Credencial administrativa do Grafana incompleta em ${monitoring_env}."
+
+  ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  grafana_public_host="$(sed -n 's/^GRAFANA_PUBLIC_HOST=//p' "$ENV_FILE" | tail -n 1)"
+  [[ -n "$grafana_public_host" ]] || grafana_public_host='grafana.localhost'
+  auth_user="$stored_user"
+  auth_password="$stored_password"
+
+  if ! profile="$(curl -fsS --max-time 30 \
+    -H "Host: ${grafana_public_host}" \
+    -u "${auth_user}:${auth_password}" \
+    "http://127.0.0.1:${ui_port}/api/user")"; then
+    # Torna a operação idempotente quando uma execução anterior atualizou o
+    # banco, mas foi interrompida antes de persistir o novo arquivo de segredo.
+    auth_password="$OPENWEBUI_DESIRED_PASSWORD"
+    if ! profile="$(curl -fsS --max-time 30 \
+      -H "Host: ${grafana_public_host}" \
+      -u "${auth_user}:${auth_password}" \
+      "http://127.0.0.1:${ui_port}/api/user")"; then
+      auth_user="$ADMIN_EMAIL"
+      auth_password="$stored_password"
+      if ! profile="$(curl -fsS --max-time 30 \
+        -H "Host: ${grafana_public_host}" \
+        -u "${auth_user}:${auth_password}" \
+        "http://127.0.0.1:${ui_port}/api/user")"; then
+        auth_password="$OPENWEBUI_DESIRED_PASSWORD"
+        profile="$(curl -fsS --max-time 30 \
+          -H "Host: ${grafana_public_host}" \
+          -u "${auth_user}:${auth_password}" \
+          "http://127.0.0.1:${ui_port}/api/user")"
+      fi
+    fi
+  fi
+  user_id="$(printf '%s' "$profile" | jq -er '.id')"
+  theme="$(printf '%s' "$profile" | jq -r '.theme // ""')"
+
+  if [[ "$auth_password" != "$OPENWEBUI_DESIRED_PASSWORD" ]]; then
+    password_payload="$(jq -cn --arg password "$OPENWEBUI_DESIRED_PASSWORD" '{password:$password}')"
+    printf '%s' "$password_payload" | curl -fsS --max-time 30 \
+      -X PUT \
+      -H "Host: ${grafana_public_host}" \
+      -H 'content-type: application/json' \
+      -u "${auth_user}:${auth_password}" \
+      "http://127.0.0.1:${ui_port}/api/admin/users/${user_id}/password" \
+      --data-binary @- >/dev/null
+    auth_password="$OPENWEBUI_DESIRED_PASSWORD"
+  fi
+
+  update_payload="$(jq -cn \
+    --arg email "$ADMIN_EMAIL" \
+    --arg name "$OPENWEBUI_ADMIN_NAME" \
+    --arg login "$ADMIN_EMAIL" \
+    --arg theme "$theme" \
+    '{email:$email,name:$name,login:$login,theme:$theme}')"
+  printf '%s' "$update_payload" | curl -fsS --max-time 30 \
+    -X PUT \
+    -H "Host: ${grafana_public_host}" \
+    -H 'content-type: application/json' \
+    -u "${auth_user}:${auth_password}" \
+    "http://127.0.0.1:${ui_port}/api/users/${user_id}" \
+    --data-binary @- >/dev/null
+
+  verification="$(curl -fsS --max-time 30 \
+    -H "Host: ${grafana_public_host}" \
+    -u "${ADMIN_EMAIL}:${OPENWEBUI_DESIRED_PASSWORD}" \
+    "http://127.0.0.1:${ui_port}/api/user")"
+  printf '%s' "$verification" | jq -e \
+    --arg email "${ADMIN_EMAIL,,}" \
+    --arg login "${ADMIN_EMAIL,,}" \
+    '.email == $email and .login == $login and .isGrafanaAdmin == true' >/dev/null
+
+  {
+    printf 'GF_SECURITY_ADMIN_USER=%s\n' "$ADMIN_EMAIL"
+    printf 'GF_SECURITY_ADMIN_PASSWORD=%s\n' "$OPENWEBUI_DESIRED_PASSWORD"
+    printf 'GF_SECURITY_ADMIN_EMAIL=%s\n' "$ADMIN_EMAIL"
+  } >"${monitoring_env}.tmp"
+  chmod 600 "${monitoring_env}.tmp"
+  mv "${monitoring_env}.tmp" "$monitoring_env"
 }
 
 validate_installation_command() {
@@ -1616,6 +1710,7 @@ main() {
   run_step "Validando o AgentGateway e o endpoint MCP" validate_agentgateway_command
   run_step "Baixando modelos e configurando o Open WebUI" validate_openwebui_command
   run_step "Validando Prometheus e Grafana" validate_monitoring_command
+  run_step "Sincronizando a credencial administrativa do Grafana" sync_grafana_admin_command
   run_step "Sincronizando a credencial administrativa do Open WebUI" migrate_openwebui_admin_command
   run_step "Preparando o worker do Google Drive" restart_and_validate_knowledge_sync_command
   show_summary
