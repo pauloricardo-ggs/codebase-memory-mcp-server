@@ -36,6 +36,8 @@ const ADMIN_AUTH_USERNAME = process.env.ADMIN_AUTH_USERNAME || '';
 const ADMIN_AUTH_PASSWORD = process.env.ADMIN_AUTH_PASSWORD || '';
 const ADMIN_JWT_SECRET_FILE = process.env.ADMIN_JWT_SECRET_FILE || path.join(DATA_DIR, 'secrets', 'admin-jwt-secret');
 const ADMIN_COOKIE_SECURE = process.env.ADMIN_COOKIE_SECURE === 'true';
+const GRAFANA_PUBLIC_URL = String(process.env.GRAFANA_PUBLIC_URL || 'http://grafana.localhost:8080').replace(/\/+$/, '');
+const MCP_PUBLIC_URL = String(process.env.MCP_PUBLIC_URL || 'http://mcp.localhost:8080').replace(/\/+$/, '');
 
 await Promise.all([mkdir(DATA_DIR, { recursive: true }), mkdir(REPOSITORIES_DIR, { recursive: true })]);
 
@@ -914,7 +916,12 @@ async function routeApi(request, response, url) {
     return textResponse(response, 200, combined, 'text/plain; version=0.0.4; charset=utf-8');
   }
   if (request.method === 'GET' && url.pathname === '/api/config') {
-    return json(response, 200, { uiPort: UI_PORT, knowledgeSyncEnabled: KNOWLEDGE_SYNC_ENABLED });
+    return json(response, 200, {
+      uiPort: UI_PORT,
+      knowledgeSyncEnabled: KNOWLEDGE_SYNC_ENABLED,
+      grafanaUrl: GRAFANA_PUBLIC_URL,
+      mcpUrl: MCP_PUBLIC_URL
+    });
   }
   if (url.pathname === '/api/knowledge-sync/credentials') {
     if (request.method === 'GET') {
@@ -1276,10 +1283,10 @@ http.createServer(async (request, response) => {
     const publicAsset = ['/login', '/login.html', '/login.js', '/styles.css'].includes(url.pathname);
     const session = adminAuth.session(request);
     if (publicAsset) {
-      if (session && ['/login', '/login.html'].includes(url.pathname)) return redirect(response, '/admin/');
+      if (session && ['/login', '/login.html'].includes(url.pathname)) return redirect(response, '/');
       return serveStatic(response, url.pathname);
     }
-    if (!session) return redirect(response, '/admin/login');
+    if (!session) return redirect(response, '/login');
     serveStatic(response, url.pathname);
   } catch (error) { errorResponse(response, error); }
 }).listen(PORT, '0.0.0.0', () => console.log(`Codebase Memory Admin em http://0.0.0.0:${PORT}`));

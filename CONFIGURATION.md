@@ -12,7 +12,14 @@ CBM_HOST_BIN=/home/usuario/.local/bin/codebase-memory-mcp
 LOCAL_UID=1000
 LOCAL_GID=1000
 UI_PORT=8080
-PUBLIC_BASE_URL=http://localhost:8080
+OPENWEBUI_PUBLIC_URL=https://<host-openwebui>
+OPENWEBUI_PUBLIC_HOST=<host-openwebui>
+ADMIN_PUBLIC_URL=https://<host-admin>
+ADMIN_PUBLIC_HOST=<host-admin>
+GRAFANA_PUBLIC_URL=https://<host-grafana>
+GRAFANA_PUBLIC_HOST=<host-grafana>
+MCP_PUBLIC_URL=https://<host-mcp>
+MCP_PUBLIC_HOST=<host-mcp>
 WORKSPACE_TIMEZONE=America/Maceio
 REPOSITORY_SYNC_CONCURRENCY=3
 OLLAMA_VERSION=0.32.1
@@ -33,8 +40,15 @@ RAG_TOP_K_RERANKER=8
 | Variável | Finalidade |
 | --- | --- |
 | `CBM_MEM_BUDGET_MB` | Orçamento de memória do Codebase Memory. |
-| `UI_PORT` | Única porta pública: Open WebUI, painel, Grafana e MCP. |
-| `PUBLIC_BASE_URL` | Origem pública sem barra final nem caminho; as rotas dos serviços são derivadas dela. |
+| `UI_PORT` | Porta HTTP do proxy, vinculada somente a `127.0.0.1` para consumo pelo túnel no host. |
+| `OPENWEBUI_PUBLIC_URL` | Origem pública do Open WebUI, sem barra final nem caminho. |
+| `OPENWEBUI_PUBLIC_HOST` | Hostname extraído da origem do Open WebUI e usado pelo Nginx. |
+| `ADMIN_PUBLIC_URL` | Origem pública do painel administrativo. |
+| `ADMIN_PUBLIC_HOST` | Hostname do painel administrativo usado pelo Nginx. |
+| `GRAFANA_PUBLIC_URL` | Origem pública do Grafana. |
+| `GRAFANA_PUBLIC_HOST` | Hostname do Grafana usado pelo Nginx. |
+| `MCP_PUBLIC_URL` | Origem pública do endpoint MCP; o endpoint fica na raiz. |
+| `MCP_PUBLIC_HOST` | Hostname do MCP usado pelo Nginx. |
 | `WORKSPACE_TIMEZONE` | Fuso padrão dos agendamentos de repositórios e Drive. |
 | `REPOSITORY_SYNC_CONCURRENCY` | Sincronizações Git simultâneas, entre 1 e 20. |
 | `OLLAMA_CHAT_MODEL` | Modelo de chat baixado pelo instalador. |
@@ -83,22 +97,24 @@ docker compose logs --tail=200 docling open-webui knowledge-sync
 docker compose restart docling
 ```
 
-Prometheus e Grafana fazem parte do profile `monitoring`, habilitado pelo instalador em `COMPOSE_PROFILES`. Prometheus não possui porta no host; o Grafana é acessado exclusivamente em `http://localhost:8080/grafana/` ou `http://<servidor>:8080/grafana/` pelo proxy e usa sua própria tela de login. O dashboard operacional também é incorporado na área **Observabilidade** do painel; o proxy limita esse iframe à mesma origem. A credencial inicial fica armazenada com permissão `0600` em `data/secrets/monitoring.env`.
+Prometheus e Grafana fazem parte do profile `monitoring`, habilitado pelo instalador em `COMPOSE_PROFILES`. Prometheus não possui porta no host; o Grafana é acessado exclusivamente pela origem definida em `GRAFANA_PUBLIC_URL` e usa sua própria tela de login. O dashboard operacional também é incorporado na área **Observabilidade** do painel; o proxy autoriza como `frame-ancestor` somente a origem administrativa configurada. A credencial inicial fica armazenada com permissão `0600` em `data/secrets/monitoring.env`.
 
-O instalador solicita a URL pública e usa `http://localhost:8080` como padrão. Em produção, informe `https://seu-dominio` — sem barra final e sem `/grafana`. As URLs passam a ser derivadas automaticamente:
+O instalador solicita quatro origens públicas distintas. Cada serviço opera na raiz de seu próprio hostname, sem `/admin`, `/grafana` ou `/mcp`:
 
 ```text
-https://seu-dominio/          Open WebUI
-https://seu-dominio/admin/   painel administrativo
-https://seu-dominio/grafana/ Grafana
-https://seu-dominio/mcp      endpoint MCP
+https://<host-openwebui>/ Open WebUI
+https://<host-admin>/     painel administrativo
+https://<host-grafana>/   Grafana
+https://<host-mcp>/       endpoint MCP
 ```
 
-Depois de alterar `PUBLIC_BASE_URL`, recrie `open-webui`, `grafana` e `proxy` ou execute novamente o instalador.
+Depois de alterar qualquer URL ou hostname público, recrie `admin`, `open-webui`, `grafana` e `proxy` ou execute novamente o instalador. As variáveis `*_PUBLIC_HOST` devem corresponder exatamente ao hostname de suas respectivas URLs.
 
-O proxy externo deve encaminhar `X-Forwarded-Proto: https`; assim, o painel marca automaticamente o cookie administrativo como `Secure`.
+Para Cloudflare Tunnel executado no host, crie quatro aplicações publicadas, todas com serviço de origem `http://127.0.0.1:8080`. Mantenha a opção **HTTP Host Header** sem sobrescrita, pois o Nginx usa o hostname público recebido para selecionar o serviço. O DNS associa cada hostname ao túnel; a porta pertence à configuração da origem, não ao registro DNS. O proxy aceita HTTP local porque o TLS público termina na Cloudflare e o transporte até o host já ocorre dentro do túnel criptografado. Não configure a origem como `https://127.0.0.1:8080`.
 
-O painel administrativo usa o usuário definido pelo instalador, JWT assinado e cookie `HttpOnly`, `SameSite=Strict`, limitado a `/admin`. Não há cadastro nem recuperação de senha. A alteração da credencial é feita executando novamente `./install.sh`. Os arquivos `data/secrets/admin.env` e `data/secrets/admin-jwt-secret` devem permanecer com permissão `0600`.
+O túnel ou proxy externo deve encaminhar `X-Forwarded-Proto: https`; assim, o painel marca automaticamente o cookie administrativo como `Secure`.
+
+O painel administrativo usa o usuário definido pelo instalador, JWT assinado e cookie `HttpOnly`, `SameSite=Strict`, limitado à raiz do hostname administrativo. Não há cadastro nem recuperação de senha. A alteração da credencial é feita executando novamente `./install.sh`. Os arquivos `data/secrets/admin.env` e `data/secrets/admin-jwt-secret` devem permanecer com permissão `0600`.
 
 A página **Operações** mantém em `data/jobs.json` os logs dos últimos sete dias e apresenta dez operações por página. O arquivo é preservado durante reinstalações; operações que estavam em execução quando o serviço reiniciou são registradas como interrompidas.
 

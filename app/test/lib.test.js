@@ -65,18 +65,18 @@ test('extrai o projeto da última linha JSON da indexação', () => {
 
 test('reconcilia o ID MCP pelo caminho real do repositório, não pelo nome do GitHub', () => {
   const repositories = [
-    { accessId: 'repo-1', fullName: 'ma9internet/clapsapi-contrato', path: '/data/repositories/claps/clapsapi-contrato' },
-    { accessId: 'repo-2', fullName: 'ma9internet/legado', path: '/data/repositories/claps/legado', project: 'id-antigo' }
+    { accessId: 'repo-1', fullName: 'organizacao/api-contrato', path: '/data/repositories/plataforma/api-contrato' },
+    { accessId: 'repo-2', fullName: 'organizacao/legado', path: '/data/repositories/plataforma/legado', project: 'id-antigo' }
   ];
   const result = reconcileRepositoryProjects(repositories, [{
-    name: 'data-repositories-claps-clapsapi-contrato',
-    root_path: '/data/repositories/claps/clapsapi-contrato'
+    name: 'data-repositories-plataforma-api-contrato',
+    root_path: '/data/repositories/plataforma/api-contrato'
   }]);
 
   assert.equal(result.changed, true);
-  assert.equal(result.repositories[0].project, 'data-repositories-claps-clapsapi-contrato');
+  assert.equal(result.repositories[0].project, 'data-repositories-plataforma-api-contrato');
   assert.equal('project' in result.repositories[1], false);
-  assert.equal(result.repositories[0].fullName, 'ma9internet/clapsapi-contrato');
+  assert.equal(result.repositories[0].fullName, 'organizacao/api-contrato');
 });
 
 test('credencial do GitHub persiste com permissão restrita', async t => {

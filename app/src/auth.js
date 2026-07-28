@@ -89,11 +89,11 @@ export async function createAdminAuth({ username, password, secret, ttlSeconds =
   }
 
   function sessionCookie(token, secure = false) {
-    return `cbm_admin_session=${encodeURIComponent(token)}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=${ttlSeconds}${secure ? '; Secure' : ''}`;
+    return `cbm_admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${ttlSeconds}${secure ? '; Secure' : ''}`;
   }
 
   function clearCookie(secure = false) {
-    return `cbm_admin_session=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`;
+    return `cbm_admin_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`;
   }
 
   return { username: normalizedUsername, issueToken, verifyToken, verifyCredentials, tokenFromRequest, session, revoke, sessionCookie, clearCookie };

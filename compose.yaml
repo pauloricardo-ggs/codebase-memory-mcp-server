@@ -81,6 +81,9 @@ services:
       KNOWLEDGE_SYNC_ENABLED: "true"
       KNOWLEDGE_SYNC_URL: http://knowledge-sync:3002
       KNOWLEDGE_SYNC_TOKEN_FILE: /data/app/secrets/knowledge-sync/knowledge-sync-token
+      GRAFANA_PUBLIC_URL: "${GRAFANA_PUBLIC_URL:-http://grafana.localhost:8080}"
+      MCP_PUBLIC_URL: "${MCP_PUBLIC_URL:-http://mcp.localhost:8080}"
+      MCP_PUBLIC_HOST: "${MCP_PUBLIC_HOST:-mcp.localhost}"
     volumes:
       - ./data:/data/app
       - ./repositories:/data/repositories
@@ -102,9 +105,14 @@ services:
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - "envsubst '$$UI_PORT' < /etc/nginx/nginx.conf.template > /tmp/nginx.conf && exec nginx -c /tmp/nginx.conf -g 'daemon off;'"
+      - "envsubst '$$UI_PORT $$OPENWEBUI_PUBLIC_HOST $$ADMIN_PUBLIC_HOST $$GRAFANA_PUBLIC_HOST $$MCP_PUBLIC_HOST $$ADMIN_PUBLIC_URL' < /etc/nginx/nginx.conf.template > /tmp/nginx.conf && exec nginx -c /tmp/nginx.conf -g 'daemon off;'"
     environment:
       UI_PORT: "${UI_PORT:-8080}"
+      OPENWEBUI_PUBLIC_HOST: "${OPENWEBUI_PUBLIC_HOST:-openwebui.localhost}"
+      ADMIN_PUBLIC_HOST: "${ADMIN_PUBLIC_HOST:-admin.localhost}"
+      GRAFANA_PUBLIC_HOST: "${GRAFANA_PUBLIC_HOST:-grafana.localhost}"
+      MCP_PUBLIC_HOST: "${MCP_PUBLIC_HOST:-mcp.localhost}"
+      ADMIN_PUBLIC_URL: "${ADMIN_PUBLIC_URL:-http://admin.localhost:8080}"
     depends_on:
       agentgateway-ready:
         condition: service_completed_successfully
@@ -115,7 +123,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf.template:ro
     ports:
-      - "${UI_PORT:-8080}:8080"
+      - "127.0.0.1:${UI_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -173,7 +181,7 @@ services:
     env_file:
       - ./data/secrets/openwebui.env
     environment:
-      WEBUI_URL: "${PUBLIC_BASE_URL:-http://localhost:8080}"
+      WEBUI_URL: "${OPENWEBUI_PUBLIC_URL:-http://openwebui.localhost:8080}"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
       RAG_EMBEDDING_ENGINE: ollama
       RAG_EMBEDDING_MODEL: bge-m3
@@ -221,7 +229,7 @@ services:
       RAG_RERANKING_BATCH_SIZE: "${RAG_RERANKING_BATCH_SIZE:-4}"
       RAG_TOP_K: "${RAG_TOP_K:-20}"
       RAG_TOP_K_RERANKER: "${RAG_TOP_K_RERANKER:-8}"
-      MCP_ADMIN_URL: http://proxy:8080/mcp
+      MCP_ADMIN_URL: "http://agentgateway:${UI_PORT:-8080}/mcp"
       MCP_SYSTEM_TOKEN_FILE: /run/cbm-secrets/mcp-system-token
     volumes:
       - ./openwebui/bootstrap:/bootstrap:ro
@@ -283,8 +291,8 @@ services:
     environment:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_SERVER_ROOT_URL: "${PUBLIC_BASE_URL:-http://localhost:8080}/grafana/"
-      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_ROOT_URL: "${GRAFANA_PUBLIC_URL:-http://grafana.localhost:8080}/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/codebase-memory-operation.json
     volumes:
       - grafana-data:/var/lib/grafana

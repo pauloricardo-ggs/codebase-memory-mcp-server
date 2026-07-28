@@ -2,7 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const content = $('#content');
 const modal = $('#modal');
-const grafanaDashboardUrl = '/grafana/d/codebase-memory-operation/codebase-memory-operacao?orgId=1';
+let grafanaDashboardUrl = '';
 let currentView = 'workspaces';
 let currentWorkspace = null;
 let jobs = [];
@@ -24,10 +24,9 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '
 const date = value => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle:'short', timeStyle:'short' }).format(new Date(value)) : '—';
 
 async function api(url, options = {}) {
-  const adminUrl = url.startsWith('/api/') ? `/admin${url}` : url;
-  const response = await fetch(adminUrl, { ...options, headers: { 'content-type':'application/json', ...options.headers } });
+  const response = await fetch(url, { ...options, headers: { 'content-type':'application/json', ...options.headers } });
   if (response.status === 401) {
-    location.assign('/admin/login');
+    location.assign('/login');
     throw new Error('Sua sessão expirou. Entre novamente.');
   }
   const payload = await response.json().catch(() => ({}));
@@ -366,7 +365,7 @@ async function renderMcpUsers() {
   const activeCount = users.filter(user => user.status === 'active').length;
   const totalActive = activeCount + (systemAccess ? 1 : 0);
   const modeCopy = `${totalActive} token${totalActive === 1 ? '' : 's'} ativo${totalActive === 1 ? '' : 's'}, incluindo a credencial técnica. Requisições sem uma chave válida são bloqueadas.`;
-  content.innerHTML = `<div class="access-banner ${accessMode}"><div><strong>${accessMode === 'strict' ? 'Autenticação obrigatória' : 'Acesso inicial sem token'}</strong><p>${modeCopy}</p></div><code>${escapeHtml(new URL('/mcp', location.origin).toString())}</code></div>
+  content.innerHTML = `<div class="access-banner ${accessMode}"><div><strong>${accessMode === 'strict' ? 'Autenticação obrigatória' : 'Acesso inicial sem token'}</strong><p>${modeCopy}</p></div><code>${escapeHtml(publicConfig.mcpUrl)}</code></div>
     <article class="mcp-system-card"><div><span class="user-avatar">SYS</span><div><strong>Sistema / Playground</strong><p>Credencial técnica com acesso irrestrito, criada automaticamente para validações da instalação e uso manual no MCP Playground.</p></div></div><div class="repo-actions"><button class="button small" data-action="reveal-system-token">Exibir token</button><button class="button small danger" data-action="rotate-system-token">Gerar novo token</button></div></article>
     ${users.length
       ? `<div class="toolbar"><span class="subtle">${users.length} usuário${users.length === 1 ? '' : 's'} · ${activeCount} ativo${activeCount === 1 ? '' : 's'}</span></div><div class="mcp-user-list">${users.map(mcpUserRow).join('')}</div>`
@@ -702,7 +701,7 @@ document.addEventListener('click', async event => {
     }
     if (action === 'logout') {
       await api('/api/auth/logout', { method:'POST', body:'{}' });
-      location.assign('/admin/login');
+      location.assign('/login');
       return;
     }
     if (action === 'back') return renderWorkspaces();
@@ -721,6 +720,7 @@ document.addEventListener('click', async event => {
 const session = await api('/api/auth/session');
 $('#admin-identity').textContent = session.user.username;
 publicConfig = await api('/api/config');
+grafanaDashboardUrl = `${publicConfig.grafanaUrl}/d/codebase-memory-operation/codebase-memory-operacao?orgId=1`;
 await Promise.all([renderGithub(), renderWorkspaces(), refreshJobs()]);
 setInterval(refreshJobs, 3000);
 setInterval(() => refreshKnowledgeSyncRows().catch(() => {}), 5000);

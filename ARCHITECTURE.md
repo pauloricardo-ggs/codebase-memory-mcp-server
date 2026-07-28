@@ -5,11 +5,11 @@ Este documento descreve os serviços, fluxos de dados, persistência e decisões
 ## Visão dos serviços
 
 ```text
-Navegador ──► Nginx ──┬──► /          Open WebUI
-                      ├──► /admin/    painel administrativo
-                      └──► /grafana/  Grafana
+Navegador ──► Cloudflare Tunnel ──► Nginx por hostname ──┬──► Open WebUI
+                                                        ├──► painel administrativo
+                                                        └──► Grafana
 
-Clientes MCP ──► Nginx /mcp ──► AgentGateway ──► Codebase Memory MCP
+Clientes MCP ──► Cloudflare Tunnel ──► hostname MCP ──► AgentGateway ──► Codebase Memory MCP
                                       │
                                       └── controle de tokens e projetos permitidos
 
@@ -153,8 +153,8 @@ O backup mínimo deve incluir `data/`, `cache/`, `repositories/` quando os clone
 ## Segurança operacional
 
 - Não exponha Ollama, Docling ou `knowledge-sync` diretamente à rede pública.
-- Mantenha somente a porta do proxy publicada pelo Docker.
-- Publique o proxy atrás de HTTPS, VPN ou rede corporativa.
+- Mantenha a porta do proxy vinculada somente a `127.0.0.1`.
+- Publique somente os quatro hostnames do proxy pelo túnel ou por infraestrutura HTTPS equivalente.
 - Use tokens MCP individuais quando o acesso não puder abranger todo o workspace.
 - Restrinja a Service Account do Drive a leitura das pastas necessárias.
 - Mantenha `data/`, `.env` e credenciais fora do Git.
@@ -170,7 +170,7 @@ O instalador habilita o profile Compose `monitoring`, que inicia Prometheus e Gr
 docker compose --profile monitoring up -d prometheus grafana
 ```
 
-Prometheus permanece exclusivamente na rede Docker e não possui rota no proxy. O Grafana é publicado em `/grafana/`, utiliza seu login próprio e tem o dashboard operacional incorporado na área **Observabilidade** do painel administrativo. O proxy restringe o embedding à mesma origem com `frame-ancestors 'self'`. Em produção, a infraestrutura externa deve terminar HTTPS e restringir a origem aos IPs corporativos.
+Prometheus permanece exclusivamente na rede Docker e não possui rota no proxy. O Grafana é publicado na raiz de seu hostname, utiliza seu login próprio e tem o dashboard operacional incorporado na área **Observabilidade** do painel administrativo. O proxy restringe o embedding com `frame-ancestors` à origem administrativa configurada. Em produção, a infraestrutura externa deve terminar HTTPS e restringir a origem conforme as políticas da organização.
 
 As métricas não usam perguntas, nomes de arquivo ou usuário como labels. Logs operacionais são JSON e utilizam IDs de operação, sem conteúdo documental ou credenciais.
 

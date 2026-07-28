@@ -24,7 +24,7 @@ test('sessão aceita cookie ou Bearer e pode ser revogada', async () => {
   const token = auth.issueToken();
   assert.equal(auth.session({ headers: { cookie: `outro=1; cbm_admin_session=${token}` } }).role, 'admin');
   assert.equal(auth.session({ headers: { authorization: `Bearer ${token}` } }).role, 'admin');
-  assert.match(auth.sessionCookie(token, true), /Path=\/admin; HttpOnly; SameSite=Strict; Max-Age=28800; Secure/);
+  assert.match(auth.sessionCookie(token, true), /Path=\/; HttpOnly; SameSite=Strict; Max-Age=28800; Secure/);
   auth.revoke(token);
   assert.equal(auth.verifyToken(token), null);
 });

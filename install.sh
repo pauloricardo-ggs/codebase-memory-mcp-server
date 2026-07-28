@@ -20,7 +20,10 @@ CURRENT_USER="$(id -un)"
 SUDO_KEEPALIVE_PID=''
 ADMIN_PASSWORD=''
 ADMIN_EMAIL=''
-PUBLIC_BASE_URL=''
+OPENWEBUI_PUBLIC_URL=''
+ADMIN_PUBLIC_URL=''
+GRAFANA_PUBLIC_URL=''
+MCP_PUBLIC_URL=''
 OPENWEBUI_ADMIN_NAME='Admin'
 OPENWEBUI_PREVIOUS_EMAIL=''
 OPENWEBUI_PREVIOUS_NAME=''
@@ -773,21 +776,15 @@ ask_proxy_access() {
   success "Credencial de acesso definida para ${ADMIN_EMAIL}"
 }
 
-ask_public_base_url() {
-  local suggested input authority port port_number legacy_grafana_url
-  suggested="$(read_existing_environment_value PUBLIC_BASE_URL)"
-  if [[ -z "$suggested" ]]; then
-    legacy_grafana_url="$(read_existing_environment_value GRAFANA_ROOT_URL)"
-    [[ "$legacy_grafana_url" == */grafana/ ]] && suggested="${legacy_grafana_url%/grafana/}"
-  fi
-  suggested="${suggested%/}"
-  suggested="${suggested:-http://localhost:8080}"
+public_url_host() {
+  local authority="${1#*://}"
+  printf '%s' "${authority%%:*}"
+}
 
-  show_config_step 6 'Endereço público' 'Informe a origem usada para acessar os serviços pelo navegador e por clientes MCP.'
-  printf "${COLOR_MUTED}Use somente protocolo, domínio e porta. Os caminhos /admin, /grafana\n"
-  printf "e /mcp serão adicionados automaticamente.${COLOR_RESET}\n\n"
+ask_public_url() {
+  local variable_name="$1" label="$2" suggested="$3" input authority port port_number
   while true; do
-    prompt_value "URL base (padrão: ${suggested}):"
+    prompt_value "${label} (padrão: ${suggested}):"
     read -r input
     input="${input:-$suggested}"
     input="${input%/}"
@@ -801,12 +798,42 @@ ask_public_base_url() {
           continue
         fi
       fi
-      PUBLIC_BASE_URL="$input"
-      break
+      printf -v "$variable_name" '%s' "$input"
+      return
     fi
-    warn 'Informe uma URL HTTP ou HTTPS sem caminho, consulta ou fragmento.'
+    warn 'Informe uma URL HTTP ou HTTPS sem caminho, consulta, fragmento ou barra final.'
   done
-  success "URL pública configurada como ${PUBLIC_BASE_URL}"
+}
+
+ask_public_urls() {
+  local legacy_public_url openwebui_suggested admin_suggested grafana_suggested mcp_suggested
+  legacy_public_url="$(read_existing_environment_value PUBLIC_BASE_URL)"
+  openwebui_suggested="$(read_existing_environment_value OPENWEBUI_PUBLIC_URL)"
+  admin_suggested="$(read_existing_environment_value ADMIN_PUBLIC_URL)"
+  grafana_suggested="$(read_existing_environment_value GRAFANA_PUBLIC_URL)"
+  mcp_suggested="$(read_existing_environment_value MCP_PUBLIC_URL)"
+  [[ -n "$openwebui_suggested" ]] || openwebui_suggested="${legacy_public_url:-http://openwebui.localhost:8080}"
+  admin_suggested="${admin_suggested:-http://admin.localhost:8080}"
+  grafana_suggested="${grafana_suggested:-http://grafana.localhost:8080}"
+  mcp_suggested="${mcp_suggested:-http://mcp.localhost:8080}"
+
+  show_config_step 6 'Endereços públicos' 'Cada serviço público usa um hostname próprio e opera na raiz, sem prefixo de caminho.'
+  printf "${COLOR_MUTED}Use somente protocolo, domínio e porta opcional. Em produção, informe\n"
+  printf "as quatro origens HTTPS publicadas pelo túnel.${COLOR_RESET}\n\n"
+  ask_public_url OPENWEBUI_PUBLIC_URL 'Open WebUI' "$openwebui_suggested"
+  ask_public_url ADMIN_PUBLIC_URL 'Painel administrativo' "$admin_suggested"
+  ask_public_url GRAFANA_PUBLIC_URL 'Grafana' "$grafana_suggested"
+  ask_public_url MCP_PUBLIC_URL 'Endpoint MCP' "$mcp_suggested"
+
+  if [[ "$(public_url_host "$OPENWEBUI_PUBLIC_URL")" == "$(public_url_host "$ADMIN_PUBLIC_URL")" ||
+        "$(public_url_host "$OPENWEBUI_PUBLIC_URL")" == "$(public_url_host "$GRAFANA_PUBLIC_URL")" ||
+        "$(public_url_host "$OPENWEBUI_PUBLIC_URL")" == "$(public_url_host "$MCP_PUBLIC_URL")" ||
+        "$(public_url_host "$ADMIN_PUBLIC_URL")" == "$(public_url_host "$GRAFANA_PUBLIC_URL")" ||
+        "$(public_url_host "$ADMIN_PUBLIC_URL")" == "$(public_url_host "$MCP_PUBLIC_URL")" ||
+        "$(public_url_host "$GRAFANA_PUBLIC_URL")" == "$(public_url_host "$MCP_PUBLIC_URL")" ]]; then
+    fail 'Open WebUI, painel, Grafana e MCP precisam usar hostnames distintos.'
+  fi
+  success 'Quatro origens públicas configuradas'
 }
 
 confirm_configuration() {
@@ -827,7 +854,10 @@ confirm_configuration() {
   printf '  Modelo         %s\n' "$OLLAMA_CHAT_MODEL"
   printf '  Aceleração     %s\n' "$ollama_acceleration"
   printf '  Administrador  %s\n' "$ADMIN_EMAIL"
-  printf '  URL pública    %s\n' "$PUBLIC_BASE_URL"
+  printf '  Open WebUI     %s\n' "$OPENWEBUI_PUBLIC_URL"
+  printf '  Painel         %s\n' "$ADMIN_PUBLIC_URL"
+  printf '  Grafana        %s\n' "$GRAFANA_PUBLIC_URL"
+  printf '  MCP            %s\n' "$MCP_PUBLIC_URL"
   print_rule
   printf "${COLOR_MUTED}A partir daqui, o instalador poderá solicitar sua senha do sudo e\n"
   printf "seguirá sem novas perguntas.${COLOR_RESET}\n\n"
@@ -984,19 +1014,37 @@ write_openwebui_environment() {
 }
 
 create_environment_file() {
-  local temporary_file="${ENV_FILE}.tmp" ui_port=8080 public_base_url="${PUBLIC_BASE_URL:-}" workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value compose_profiles legacy_grafana_url
+  local temporary_file="${ENV_FILE}.tmp" ui_port=8080 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value compose_profiles legacy_public_url legacy_grafana_url
+  local openwebui_public_url="${OPENWEBUI_PUBLIC_URL:-}" admin_public_url="${ADMIN_PUBLIC_URL:-}" grafana_public_url="${GRAFANA_PUBLIC_URL:-}" mcp_public_url="${MCP_PUBLIC_URL:-}"
+  local openwebui_public_host admin_public_host grafana_public_host mcp_public_host
   if [[ -f "$ENV_FILE" ]]; then
     existing_value="$(sed -n 's/^OLLAMA_VERSION=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[A-Za-z0-9._-]+$ ]] && OLLAMA_VERSION="$existing_value"
     existing_value="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 65535 )) && ui_port="$existing_value"
-    if [[ -z "$public_base_url" ]]; then
-      existing_value="$(sed -n 's/^PUBLIC_BASE_URL=//p' "$ENV_FILE" | tail -n 1)"
-      [[ "$existing_value" =~ ^https?://[^/[:space:]?#]+$ ]] && public_base_url="$existing_value"
+    if [[ -z "$openwebui_public_url" ]]; then
+      existing_value="$(sed -n 's/^OPENWEBUI_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ "$existing_value" =~ ^https?://[^/[:space:]?#]+$ ]] && openwebui_public_url="$existing_value"
     fi
-    if [[ -z "$public_base_url" ]]; then
+    if [[ -z "$openwebui_public_url" ]]; then
+      legacy_public_url="$(sed -n 's/^PUBLIC_BASE_URL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ "$legacy_public_url" =~ ^https?://[^/[:space:]?#]+$ ]] && openwebui_public_url="$legacy_public_url"
+    fi
+    if [[ -z "$admin_public_url" ]]; then
+      existing_value="$(sed -n 's/^ADMIN_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ "$existing_value" =~ ^https?://[^/[:space:]?#]+$ ]] && admin_public_url="$existing_value"
+    fi
+    if [[ -z "$grafana_public_url" ]]; then
+      existing_value="$(sed -n 's/^GRAFANA_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ "$existing_value" =~ ^https?://[^/[:space:]?#]+$ ]] && grafana_public_url="$existing_value"
+    fi
+    if [[ -z "$grafana_public_url" ]]; then
       legacy_grafana_url="$(sed -n 's/^GRAFANA_ROOT_URL=//p' "$ENV_FILE" | tail -n 1)"
-      [[ "$legacy_grafana_url" == */grafana/ ]] && public_base_url="${legacy_grafana_url%/grafana/}"
+      [[ "$legacy_grafana_url" == */grafana/ ]] && grafana_public_url="${legacy_grafana_url%/grafana/}"
+    fi
+    if [[ -z "$mcp_public_url" ]]; then
+      existing_value="$(sed -n 's/^MCP_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
+      [[ "$existing_value" =~ ^https?://[^/[:space:]?#]+$ ]] && mcp_public_url="$existing_value"
     fi
     existing_value="$(sed -n 's/^WORKSPACE_TIMEZONE=//p' "$ENV_FILE" | tail -n 1)"
     [[ -n "$existing_value" ]] && workspace_timezone="$existing_value"
@@ -1019,10 +1067,22 @@ create_environment_file() {
   fi
   compose_profiles='monitoring'
   [[ -z "$OLLAMA_COMPOSE_PROFILES" ]] || compose_profiles="${OLLAMA_COMPOSE_PROFILES},monitoring"
-  public_base_url="${public_base_url%/}"
-  [[ -n "$public_base_url" ]] || public_base_url="http://localhost:${ui_port}"
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nPUBLIC_BASE_URL=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\nDOCLING_VERSION=%s\nDOCLING_CPU_THREADS=%s\nRAG_RERANKING_MODEL=%s\nRAG_RERANKING_BATCH_SIZE=%s\nRAG_TOP_K=%s\nRAG_TOP_K_RERANKER=%s\n' \
-    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" "$public_base_url" "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$compose_profiles" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" "$DOCLING_VERSION" "$DOCLING_CPU_THREADS" "$RAG_RERANKING_MODEL" "$RAG_RERANKING_BATCH_SIZE" "$RAG_TOP_K" "$RAG_TOP_K_RERANKER" >"$temporary_file"
+  openwebui_public_url="${openwebui_public_url%/}"
+  admin_public_url="${admin_public_url%/}"
+  grafana_public_url="${grafana_public_url%/}"
+  mcp_public_url="${mcp_public_url%/}"
+  [[ -n "$openwebui_public_url" ]] || openwebui_public_url="http://openwebui.localhost:${ui_port}"
+  [[ -n "$admin_public_url" ]] || admin_public_url="http://admin.localhost:${ui_port}"
+  [[ -n "$grafana_public_url" ]] || grafana_public_url="http://grafana.localhost:${ui_port}"
+  [[ -n "$mcp_public_url" ]] || mcp_public_url="http://mcp.localhost:${ui_port}"
+  openwebui_public_host="$(public_url_host "$openwebui_public_url")"
+  admin_public_host="$(public_url_host "$admin_public_url")"
+  grafana_public_host="$(public_url_host "$grafana_public_url")"
+  mcp_public_host="$(public_url_host "$mcp_public_url")"
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nOPENWEBUI_PUBLIC_URL=%s\nOPENWEBUI_PUBLIC_HOST=%s\nADMIN_PUBLIC_URL=%s\nADMIN_PUBLIC_HOST=%s\nGRAFANA_PUBLIC_URL=%s\nGRAFANA_PUBLIC_HOST=%s\nMCP_PUBLIC_URL=%s\nMCP_PUBLIC_HOST=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\nDOCLING_VERSION=%s\nDOCLING_CPU_THREADS=%s\nRAG_RERANKING_MODEL=%s\nRAG_RERANKING_BATCH_SIZE=%s\nRAG_TOP_K=%s\nRAG_TOP_K_RERANKER=%s\n' \
+    "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" \
+    "$openwebui_public_url" "$openwebui_public_host" "$admin_public_url" "$admin_public_host" "$grafana_public_url" "$grafana_public_host" "$mcp_public_url" "$mcp_public_host" \
+    "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$compose_profiles" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" "$DOCLING_VERSION" "$DOCLING_CPU_THREADS" "$RAG_RERANKING_MODEL" "$RAG_RERANKING_BATCH_SIZE" "$RAG_TOP_K" "$RAG_TOP_K_RERANKER" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
@@ -1120,11 +1180,12 @@ start_admin_panel_command() {
 }
 
 validate_admin_panel_command() {
-  local attempt ui_port
+  local attempt ui_port admin_public_host
   ui_port="$(sed -n 's/^UI_PORT=//p' "$ENV_FILE" | tail -n 1)"
+  admin_public_host="$(sed -n 's/^ADMIN_PUBLIC_HOST=//p' "$ENV_FILE" | tail -n 1)"
   for attempt in {1..30}; do
     if curl -fsS "http://127.0.0.1:${ui_port}/healthz" >/dev/null \
-      && curl -fsS "http://127.0.0.1:${ui_port}/admin/login" >/dev/null \
+      && curl -fsS -H "Host: ${admin_public_host}" "http://127.0.0.1:${ui_port}/login" >/dev/null \
       && docker_compose exec -T admin wget -q --spider "http://127.0.0.1:3000/api/health"; then
       return 0
     fi
@@ -1156,6 +1217,9 @@ validate_agentgateway_command() {
     const { readFile } = await import("node:fs/promises");
     const systemToken = (await readFile("/data/app/secrets/mcp-system-token", "utf8")).trim();
     if (!systemToken) throw new Error("Token MCP do sistema não foi criado.");
+    const mcpEndpoint = "http://proxy:8080/";
+    const publicHost = process.env.MCP_PUBLIC_HOST;
+    if (!publicHost) throw new Error("MCP_PUBLIC_HOST não foi configurado.");
     let lastError;
     for (let attempt = 1; attempt <= 30; attempt += 1) {
       let sessionId;
@@ -1171,11 +1235,12 @@ validate_agentgateway_command() {
             clientInfo: { name: "install-check", version: "1.0" }
           }
         });
-        const unauthenticated = await fetch("http://proxy:8080/mcp", {
+        const unauthenticated = await fetch(mcpEndpoint, {
           method: "POST",
           headers: {
             accept: "application/json, text/event-stream",
-            "content-type": "application/json"
+            "content-type": "application/json",
+            host: publicHost
           },
           body: initializeBody,
           signal: AbortSignal.timeout(5000)
@@ -1184,12 +1249,13 @@ validate_agentgateway_command() {
           const body = await unauthenticated.text();
           throw new Error(`MCP aceitou chamada sem token: HTTP ${unauthenticated.status} ${body}`);
         }
-        const response = await fetch("http://proxy:8080/mcp", {
+        const response = await fetch(mcpEndpoint, {
           method: "POST",
           headers: {
             accept: "application/json, text/event-stream",
             "content-type": "application/json",
-            authorization: `Bearer ${systemToken}`
+            authorization: `Bearer ${systemToken}`,
+            host: publicHost
           },
           body: initializeBody,
           signal: AbortSignal.timeout(5000)
@@ -1202,9 +1268,10 @@ validate_agentgateway_command() {
             accept: "application/json, text/event-stream",
             "content-type": "application/json",
             authorization: `Bearer ${systemToken}`,
-            "mcp-session-id": sessionId
+            "mcp-session-id": sessionId,
+            host: publicHost
           };
-          await fetch("http://proxy:8080/mcp", {
+          await fetch(mcpEndpoint, {
             method: "POST",
             headers,
             body: JSON.stringify({
@@ -1230,7 +1297,7 @@ validate_agentgateway_command() {
           const advertisedTools = new Set();
           let cursor;
           do {
-            const listResponse = await fetch("http://proxy:8080/mcp", {
+            const listResponse = await fetch(mcpEndpoint, {
               method: "POST",
               headers,
               body: JSON.stringify({
@@ -1270,11 +1337,12 @@ validate_agentgateway_command() {
       } finally {
         if (sessionId) {
           try {
-            await fetch("http://proxy:8080/mcp", {
+            await fetch(mcpEndpoint, {
               method: "DELETE",
               headers: {
                 authorization: `Bearer ${systemToken}`,
-                "mcp-session-id": sessionId
+                "mcp-session-id": sessionId,
+                host: publicHost
               },
               signal: AbortSignal.timeout(5000)
             });
@@ -1448,8 +1516,11 @@ validate_installation_command() {
 }
 
 show_summary() {
-  local public_base_url ollama_acceleration ollama_execution
-  public_base_url="$(sed -n 's/^PUBLIC_BASE_URL=//p' "$ENV_FILE" | tail -n 1)"
+  local openwebui_public_url admin_public_url grafana_public_url mcp_public_url ollama_acceleration ollama_execution
+  openwebui_public_url="$(sed -n 's/^OPENWEBUI_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
+  admin_public_url="$(sed -n 's/^ADMIN_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
+  grafana_public_url="$(sed -n 's/^GRAFANA_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
+  mcp_public_url="$(sed -n 's/^MCP_PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1)"
   case "$OLLAMA_GPU_MODE" in
     all) ollama_acceleration='todas as GPUs NVIDIA' ;;
     selected) ollama_acceleration="GPUs ${OLLAMA_GPU_DEVICE_IDS}" ;;
@@ -1462,10 +1533,10 @@ show_summary() {
   printf "${COLOR_MUTED}Todos os serviços foram instalados e validados com sucesso.${COLOR_RESET}\n"
   print_rule
   printf "\n${COLOR_BOLD}ACESSOS${COLOR_RESET}\n"
-  printf '  Open WebUI            %s/\n' "$public_base_url"
-  printf '  Painel administrativo %s/admin/\n' "$public_base_url"
-  printf '  Grafana               %s/grafana/\n' "$public_base_url"
-  printf '  Endpoint MCP          %s/mcp\n' "$public_base_url"
+  printf '  Open WebUI            %s/\n' "$openwebui_public_url"
+  printf '  Painel administrativo %s/\n' "$admin_public_url"
+  printf '  Grafana               %s/\n' "$grafana_public_url"
+  printf '  Endpoint MCP          %s/\n' "$mcp_public_url"
   printf "\n${COLOR_BOLD}CONFIGURAÇÃO${COLOR_RESET}\n"
   printf '  Administrador         %s\n' "$ADMIN_EMAIL"
   printf '  Ollama                %s · %s · %s\n' "$OLLAMA_CHAT_MODEL" "$ollama_execution" "$ollama_acceleration"
@@ -1488,7 +1559,7 @@ main() {
   ask_ollama_model
   ask_ollama_gpu
   ask_proxy_access
-  ask_public_base_url
+  ask_public_urls
 
   if ! confirm_configuration; then
     printf "\n${COLOR_YELLOW}Instalação cancelada.${COLOR_RESET} Nenhuma alteração foi aplicada.\n\n"

@@ -28,7 +28,7 @@ test('Compose inclui Ollama, Docling, Open WebUI, bootstrap e worker permanente'
   assert.match(compose, /RAG_RERANKING_MODEL: "\$\{RAG_RERANKING_MODEL-BAAI\/bge-reranker-v2-m3\}"/);
   assert.match(compose, /RAG_TOP_K: "\$\{RAG_TOP_K:-20\}"/);
   assert.match(compose, /RAG_TOP_K_RERANKER: "\$\{RAG_TOP_K_RERANKER:-8\}"/);
-  assert.match(compose, /MCP_ADMIN_URL: http:\/\/proxy:8080\/mcp/);
+  assert.match(compose, /MCP_ADMIN_URL: "http:\/\/agentgateway:\$\{UI_PORT:-8080\}\/mcp"/);
   assert.match(compose, /\.\/data\/secrets:\/run\/cbm-secrets:ro/);
   assert.match(compose, /ollama-data:/);
   assert.match(compose, /openwebui-data:/);
@@ -66,7 +66,7 @@ test('Grafana provisiona dashboard operacional e Prometheus como datasource padr
   assert.match(provider, /path: \/var\/lib\/grafana\/dashboards/);
 });
 
-test('painel incorpora o dashboard operacional do Grafana somente na mesma origem', async () => {
+test('painel incorpora o dashboard do hostname público do Grafana', async () => {
   const [compose, nginx, html, browser, styles] = await Promise.all([
     readFile(path.join(root, 'compose.yaml'), 'utf8'),
     readFile(path.join(root, 'nginx/nginx.conf'), 'utf8'),
@@ -75,10 +75,10 @@ test('painel incorpora o dashboard operacional do Grafana somente na mesma orige
     readFile(path.join(root, 'app/public/styles.css'), 'utf8')
   ]);
   assert.match(compose, /GF_SECURITY_ALLOW_EMBEDDING: "true"/);
-  assert.match(nginx, /location \^~ \/grafana\/[\s\S]*Content-Security-Policy "frame-ancestors 'self'"/);
+  assert.match(nginx, /server_name \$\{GRAFANA_PUBLIC_HOST\}[\s\S]*Content-Security-Policy "frame-ancestors \$\{ADMIN_PUBLIC_URL\}"/);
   assert.match(html, /data-view="observability"/);
   assert.match(browser, /function renderObservability\(\)/);
-  assert.match(browser, /\/grafana\/d\/codebase-memory-operation\/codebase-memory-operacao\?orgId=1/);
+  assert.match(browser, /publicConfig\.grafanaUrl.*\/d\/codebase-memory-operation\/codebase-memory-operacao\?orgId=1/);
   assert.match(browser, /title="Dashboard de operação do Codebase Memory"/);
   assert.match(browser, /O Grafana mantém uma sessão própria/);
   assert.match(styles, /\.observability-frame iframe \{[^}]*width:100%/);
@@ -108,32 +108,36 @@ test('proxy é o único ponto de entrada e publica Open WebUI, admin, Grafana e 
     readFile(path.join(root, 'nginx/nginx.conf'), 'utf8'),
     readFile(path.join(root, 'install.sh'), 'utf8')
   ]);
-  assert.match(compose, /ports:\n\s+- "\$\{UI_PORT:-8080\}:8080"/);
+  assert.match(compose, /ports:\n\s+- "127\.0\.0\.1:\$\{UI_PORT:-8080\}:8080"/);
   assert.doesNotMatch(compose, /OPENWEBUI_PORT|PROMETHEUS_PORT|GRAFANA_PORT|AGENTGATEWAY_UI_PORT/);
   assert.doesNotMatch(compose, /^  graph-ui:/m);
   assert.match(compose, /open-webui:[\s\S]*?expose:\n\s+- "8080"/);
   assert.match(compose, /ADMIN_JWT_SECRET_FILE: \/data\/app\/secrets\/admin-jwt-secret/);
-  assert.match(compose, /WEBUI_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8080\}"/);
-  assert.match(compose, /GF_SERVER_ROOT_URL: "\$\{PUBLIC_BASE_URL:-http:\/\/localhost:8080\}\/grafana\/"/);
-  assert.match(compose, /GF_SERVER_SERVE_FROM_SUB_PATH: "true"/);
+  assert.match(compose, /WEBUI_URL: "\$\{OPENWEBUI_PUBLIC_URL:-http:\/\/openwebui\.localhost:8080\}"/);
+  assert.match(compose, /GF_SERVER_ROOT_URL: "\$\{GRAFANA_PUBLIC_URL:-http:\/\/grafana\.localhost:8080\}\/"/);
+  assert.match(compose, /GF_SERVER_SERVE_FROM_SUB_PATH: "false"/);
   assert.match(compose, /GF_SECURITY_ALLOW_EMBEDDING: "true"/);
-  assert.match(nginx, /location \^~ \/grafana\//);
+  for (const hostname of ['OPENWEBUI', 'ADMIN', 'GRAFANA', 'MCP']) {
+    assert.ok(nginx.includes(`server_name \${${hostname}_PUBLIC_HOST};`));
+  }
   assert.match(nginx, /set \$grafana_upstream http:\/\/grafana:3000/);
   assert.match(nginx, /proxy_pass \$grafana_upstream/);
   assert.doesNotMatch(nginx, /proxy_pass http:\/\/prometheus/);
-  assert.match(nginx, /location \/ \{[\s\S]*proxy_pass http:\/\/open-webui:8080/);
-  assert.match(nginx, /location \/admin\/ \{[\s\S]*proxy_pass http:\/\/admin:3000\//);
-  assert.match(nginx, /location = \/mcp/);
-  assert.match(nginx, /location = \/admin\/api\/auth\/login \{[\s\S]*proxy_set_header X-Forwarded-Host \$http_host/);
-  assert.match(nginx, /location \/admin\/ \{[\s\S]*proxy_set_header X-Forwarded-Host \$http_host/);
+  assert.match(nginx, /server_name \$\{OPENWEBUI_PUBLIC_HOST\}[\s\S]*proxy_pass http:\/\/open-webui:8080/);
+  assert.match(nginx, /server_name \$\{ADMIN_PUBLIC_HOST\}[\s\S]*proxy_pass http:\/\/admin:3000/);
+  assert.match(nginx, /server_name \$\{MCP_PUBLIC_HOST\}[\s\S]*location = \/ \{[\s\S]*proxy_pass http:\/\/agentgateway:\$\{UI_PORT\}\/mcp/);
+  assert.match(nginx, /location = \/api\/auth\/login \{[\s\S]*proxy_set_header X-Forwarded-Host \$http_host/);
   assert.match(nginx, /map \$uri \$public_rate_limit_key \{/);
   assert.match(nginx, /~\^\/\(\?:_app\|static\)\/ "";/);
   assert.match(nginx, /limit_req_zone \$public_rate_limit_key zone=public_per_ip/);
   assert.doesNotMatch(nginx, /limit_req_zone \$binary_remote_addr zone=public_per_ip/);
   assert.doesNotMatch(nginx, /proxy_set_header (?:Host|X-Forwarded-Host) \$host;/);
   assert.doesNotMatch(nginx, /auth_basic|mcp-panel|listen 8081/);
-  assert.match(install, /PUBLIC_BASE_URL=%s/);
-  assert.match(install, /ask_public_base_url/);
+  assert.match(install, /OPENWEBUI_PUBLIC_URL=%s/);
+  assert.match(install, /ADMIN_PUBLIC_URL=%s/);
+  assert.match(install, /GRAFANA_PUBLIC_URL=%s/);
+  assert.match(install, /MCP_PUBLIC_URL=%s/);
+  assert.match(install, /ask_public_urls/);
 });
 
 test('imagem derivada lê as credenciais persistentes do Picker em tempo de execução', async () => {
@@ -429,17 +433,25 @@ test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
     assert.match(environment, /^OLLAMA_RUNTIME=docker$/m);
     assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/ollama:11434$/m);
     assert.match(environment, /^COMPOSE_PROFILES=ollama-docker,monitoring$/m);
-    assert.match(environment, /^PUBLIC_BASE_URL=http:\/\/localhost:8080$/m);
+    assert.match(environment, /^OPENWEBUI_PUBLIC_URL=http:\/\/openwebui\.localhost:8080$/m);
+    assert.match(environment, /^OPENWEBUI_PUBLIC_HOST=openwebui\.localhost$/m);
+    assert.match(environment, /^ADMIN_PUBLIC_URL=http:\/\/admin\.localhost:8080$/m);
+    assert.match(environment, /^GRAFANA_PUBLIC_URL=http:\/\/grafana\.localhost:8080$/m);
+    assert.match(environment, /^MCP_PUBLIC_URL=http:\/\/mcp\.localhost:8080$/m);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 
-test('instalador centraliza a URL pública e migra a configuração antiga do Grafana', async () => {
+test('instalador separa as origens públicas e migra configurações legadas', async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-public-url-install-'));
   try {
     await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
-    await writeFile(path.join(temporaryRoot, '.env'), 'GRAFANA_ROOT_URL=https://ia.empresa.com/grafana/\n');
+    await writeFile(path.join(temporaryRoot, '.env'), [
+      'PUBLIC_BASE_URL=https://webui.example.com',
+      'GRAFANA_ROOT_URL=https://monitoring.example.com/grafana/',
+      ''
+    ].join('\n'));
     await execFileAsync('bash', ['-c', `
       source "$1"
       CBM_MEM_BUDGET_MB=8192
@@ -448,7 +460,13 @@ test('instalador centraliza a URL pública e migra a configuração antiga do Gr
       create_environment_file
     `, 'test', path.join(temporaryRoot, 'install.sh')]);
     const environment = await readFile(path.join(temporaryRoot, '.env'), 'utf8');
-    assert.match(environment, /^PUBLIC_BASE_URL=https:\/\/ia\.empresa\.com$/m);
+    assert.match(environment, /^OPENWEBUI_PUBLIC_URL=https:\/\/webui\.example\.com$/m);
+    assert.match(environment, /^OPENWEBUI_PUBLIC_HOST=webui\.example\.com$/m);
+    assert.match(environment, /^GRAFANA_PUBLIC_URL=https:\/\/monitoring\.example\.com$/m);
+    assert.match(environment, /^GRAFANA_PUBLIC_HOST=monitoring\.example\.com$/m);
+    assert.match(environment, /^ADMIN_PUBLIC_URL=http:\/\/admin\.localhost:8080$/m);
+    assert.match(environment, /^MCP_PUBLIC_URL=http:\/\/mcp\.localhost:8080$/m);
+    assert.doesNotMatch(environment, /PUBLIC_BASE_URL/);
     assert.doesNotMatch(environment, /GRAFANA_ROOT_URL/);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

@@ -44,7 +44,7 @@ valor padrão ou a configuração atual:
 - runtime e modelo do Ollama;
 - aceleração NVIDIA, quando disponível;
 - e-mail e senha administrativos;
-- URL pública, usando `http://localhost:8080` como padrão.
+- quatro origens públicas, uma para cada serviço exposto.
 
 Antes de aplicar alterações, ele apresenta uma revisão completa e solicita a
 confirmação. A instalação é dividida em quatro fases visíveis: dependências,
@@ -61,12 +61,12 @@ O Google Drive é configurado depois da instalação, pelo painel. Consulte [Con
 
 | Serviço | Endereço |
 | --- | --- |
-| Open WebUI | `http://<servidor>:8080/` |
-| Painel administrativo | `http://<servidor>:8080/admin/` |
-| Endpoint MCP | `http://<servidor>:8080/mcp` |
-| Grafana | `http://<servidor>:8080/grafana/` |
+| Open WebUI | `http://openwebui.localhost:8080/` |
+| Painel administrativo | `http://admin.localhost:8080/` |
+| Endpoint MCP | `http://mcp.localhost:8080/` |
+| Grafana | `http://grafana.localhost:8080/` |
 
-O Open WebUI e o Grafana usam seus próprios logins. O dashboard do Grafana também fica incorporado na área **Observabilidade** do painel administrativo; na primeira abertura, pode ser necessário autenticar-se no próprio Grafana. O painel administrativo possui sessão JWT própria, limitada a `/admin`, e `/mcp` usa tokens MCP individuais. Somente a porta do proxy é publicada; Prometheus e os demais backends permanecem na rede Docker.
+O Open WebUI e o Grafana usam seus próprios logins. O dashboard do Grafana também fica incorporado na área **Observabilidade** do painel administrativo; na primeira abertura, pode ser necessário autenticar-se no próprio Grafana. O painel administrativo possui sessão JWT própria e o endpoint MCP usa tokens individuais. A porta do proxy é vinculada somente a `127.0.0.1`; Prometheus e os demais backends permanecem na rede Docker.
 O histórico da área **Operações** é persistido por sete dias em `data/jobs.json`, sobrevive à reinstalação e é exibido em páginas de dez registros.
 O dashboard provisionado **Codebase Memory — Operação** é aberto como página inicial e acompanha saúde, sincronizações, arquivos, jobs, erros externos, latência e memória.
 
@@ -86,7 +86,7 @@ O token GitHub precisa de leitura de metadados e, para repositórios privados, l
 O endpoint usa Streamable HTTP e Bearer token:
 
 ```text
-http://<servidor>:8080/mcp
+https://<host-mcp>/
 ```
 
 Exemplo para Codex em `~/.codex/config.toml`:
@@ -96,7 +96,7 @@ Exemplo para Codex em `~/.codex/config.toml`:
 enabled = true
 startup_timeout_sec = 30
 tool_timeout_sec = 120
-url = "http://<servidor>:8080/mcp"
+url = "https://<host-mcp>/"
 
 [mcp_servers.codebase_memory.http_headers]
 Authorization = "Bearer <SEU_TOKEN>"
@@ -129,11 +129,11 @@ A sincronização do Drive usa cron por Knowledge Base. O padrão `30 * * * *` v
 ## Segurança
 
 - não exponha o ambiente diretamente à internet sem HTTPS e controles de rede;
-- restrinja a porta do proxy ao IP corporativo ou à VPN;
+- mantenha a porta do proxy vinculada ao loopback e publique somente os quatro hostnames pelo túnel;
 - restrinja as portas do Ollama quando ele rodar no host macOS;
 - use tokens individuais para escopos menores que um workspace;
 - mantenha `data/`, `.env`, chaves e tokens fora do Git;
 - restrinja a Service Account do Drive a leitura das pastas necessárias;
 - preserve `data/secrets/mcp-workspace-encryption-key` nos backups.
 
-Em produção, publique o proxy atrás da infraestrutura HTTPS da organização e restrinja o acesso à VPN ou rede corporativa.
+Em produção com Cloudflare Tunnel no host, configure os quatro hostnames com a mesma origem HTTP `http://127.0.0.1:8080` e não sobrescreva o **HTTP Host Header**. O TLS público termina na Cloudflare; nenhuma porta de entrada precisa ser aberta para o proxy.

@@ -178,7 +178,7 @@ test('API cria, revoga, reativa e exclui usuários no AgentGateway', async t => 
   assert.equal(unauthorizedApi.status, 401);
   const unauthorizedPage = await fetch(`http://127.0.0.1:${appPort}/`, { redirect: 'manual' });
   assert.equal(unauthorizedPage.status, 302);
-  assert.equal(unauthorizedPage.headers.get('location'), '/admin/login');
+  assert.equal(unauthorizedPage.headers.get('location'), '/login');
   const rejectedLogin = await fetch(`http://127.0.0.1:${appPort}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
