@@ -9,10 +9,9 @@ RUN apk add --no-cache git \
     && tar -xzf /tmp/openwebui.tar.gz --strip-components=1 -C /src \
     && rm /tmp/openwebui.tar.gz
 RUN npm ci --force
-RUN npm run pyodide:fetch
 COPY patch-openwebui-citations.mjs /tmp/patch-openwebui-citations.mjs
 RUN node /tmp/patch-openwebui-citations.mjs /src/src/lib/components/chat/Messages/Citations.svelte \
-    && ./node_modules/.bin/vite build
+    && npm run build
 
 FROM ghcr.io/open-webui/open-webui:v0.11.0
 

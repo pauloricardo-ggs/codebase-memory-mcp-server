@@ -177,8 +177,8 @@ test('imagem derivada publica citações do Drive como links diretos e seguros',
   assert.match(dockerfile, /OPENWEBUI_COMMIT=f9590b8017199e56d5e953657e6498e3cef1d246/);
   assert.match(dockerfile, /FROM ghcr\.io\/open-webui\/open-webui:v0\.11\.0/);
   assert.match(dockerfile, /NODE_OPTIONS=--max-old-space-size=4096/);
-  assert.match(dockerfile, /npm run pyodide:fetch/);
-  assert.match(dockerfile, /node_modules\/\.bin\/vite build/);
+  assert.match(dockerfile, /npm run build/);
+  assert.doesNotMatch(dockerfile, /node_modules\/\.bin\/vite build/);
   assert.match(dockerfile, /COPY --from=citation-frontend \/src\/build \/app\/build/);
   assert.match(dockerfile, /google_drive_citations\.py/);
   assert.match(frontendPatch, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);
