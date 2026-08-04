@@ -486,6 +486,10 @@ test('reinstalação grava e preserva OLLAMA_VERSION no ambiente', async () => {
     assert.match(environment, /^OLLAMA_KV_CACHE_QUANTIZATION=fp16$/m);
     assert.match(environment, /^OLLAMA_RUNTIME=docker$/m);
     assert.match(environment, /^OLLAMA_BASE_URL=http:\/\/ollama:11434$/m);
+    assert.deepEqual(
+      environment.match(/^COMPOSE_FILE=(.*)$/m)[1].split(':').map((file) => path.basename(file)),
+      ['compose.yaml']
+    );
     assert.match(environment, /^COMPOSE_PROFILES=ollama-docker,monitoring$/m);
     assert.match(environment, /^OPENWEBUI_PUBLIC_URL=http:\/\/openwebui\.localhost:8080$/m);
     assert.match(environment, /^OPENWEBUI_PUBLIC_HOST=openwebui\.localhost$/m);
@@ -587,6 +591,34 @@ fi
     const allGpusOverride = await readFile(path.join(temporaryRoot, 'compose.gpu.yaml'), 'utf8');
     assert.match(allGpusOverride, /count: all/);
     assert.doesNotMatch(allGpusOverride, /device_ids:/);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('ambiente persiste os overrides do Compose usados para GPU e quantização após reinícios', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'cbm-ollama-compose-files-'));
+  try {
+    await copyFile(path.join(root, 'install.sh'), path.join(temporaryRoot, 'install.sh'));
+    await writeFile(path.join(temporaryRoot, 'compose.yaml'), 'services:\n  ollama:\n    image: ollama/ollama\n');
+    await execFileAsync('bash', ['-c', `
+      source "$1"
+      OLLAMA_RUNTIME=docker
+      OLLAMA_KV_CACHE_QUANTIZATION=q8_0
+      OLLAMA_GPU_MODE=all
+      CBM_MEM_BUDGET_MB=8192
+      ADMIN_EMAIL=admin@example.com
+      ADMIN_USERNAME=admin
+      write_ollama_quantization_compose_override
+      write_ollama_gpu_compose_override
+      create_environment_file
+    `, 'test', path.join(temporaryRoot, 'install.sh')]);
+
+    const environment = await readFile(path.join(temporaryRoot, '.env'), 'utf8');
+    assert.deepEqual(
+      environment.match(/^COMPOSE_FILE=(.*)$/m)[1].split(':').map((file) => path.basename(file)),
+      ['compose.yaml', 'compose.ollama.yaml', 'compose.gpu.yaml']
+    );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

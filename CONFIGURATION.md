@@ -27,6 +27,7 @@ OLLAMA_CHAT_MODEL=gemma4:e2b
 OLLAMA_KV_CACHE_QUANTIZATION=fp16
 OLLAMA_RUNTIME=docker
 OLLAMA_BASE_URL=http://ollama:11434
+COMPOSE_FILE=/caminho/do/clone/compose.yaml:/caminho/do/clone/compose.gpu.yaml
 COMPOSE_PROFILES=ollama-docker,monitoring
 OLLAMA_GPU_MODE=all
 OLLAMA_GPU_DEVICE_IDS=
@@ -55,6 +56,7 @@ RAG_TOP_K_RERANKER=8
 | `OLLAMA_CHAT_MODEL` | Modelo de chat baixado pelo instalador. |
 | `OLLAMA_KV_CACHE_QUANTIZATION` | Quantização do cache K/V: `fp16` (padrão) ou `q8_0`. |
 | `OLLAMA_RUNTIME` | `docker` ou `host` no macOS. |
+| `COMPOSE_FILE` | Manifests base e overrides gerados que todo comando Compose deve carregar. |
 | `OLLAMA_GPU_MODE` | `cpu`, `all`, `selected` ou `metal`. |
 | `OLLAMA_GPU_DEVICE_IDS` | UUIDs NVIDIA separados por vírgula. |
 | `DOCLING_VERSION` | Tag estável da imagem `docling-serve-cpu`. |
@@ -71,6 +73,8 @@ Ao selecionar `q8_0`, o instalador gera `compose.ollama.yaml` com `OLLAMA_FLASH_
 ## GPU NVIDIA
 
 No Linux, o instalador detecta GPUs com `nvidia-smi`, instala/configura o NVIDIA Container Toolkit quando necessário e gera `compose.gpu.yaml`. A GPU é reservada ao Ollama; o Docling permanece explicitamente em CPU.
+
+O `.env` mantém `COMPOSE_FILE` com `compose.yaml` e todos os overrides gerados. Assim, comandos comuns como `docker compose up -d`, inclusive os executados por automações de inicialização após um reboot, continuam aplicando a reserva NVIDIA e a quantização escolhida sem exigir uma nova instalação.
 
 Seleções usam UUID, não índice. Isso evita que mudanças na ordem das placas alterem a GPU escolhida.
 

@@ -1071,7 +1071,7 @@ write_openwebui_environment() {
 }
 
 create_environment_file() {
-  local temporary_file="${ENV_FILE}.tmp" ui_port=8080 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value compose_profiles legacy_public_url legacy_grafana_url
+  local temporary_file="${ENV_FILE}.tmp" ui_port=8080 workspace_timezone=America/Maceio repository_sync_concurrency=3 existing_value compose_file compose_profiles legacy_public_url legacy_grafana_url
   local openwebui_public_url="${OPENWEBUI_PUBLIC_URL:-}" admin_public_url="${ADMIN_PUBLIC_URL:-}" grafana_public_url="${GRAFANA_PUBLIC_URL:-}" mcp_public_url="${MCP_PUBLIC_URL:-}"
   local openwebui_public_host admin_public_host grafana_public_host mcp_public_host
   if [[ -f "$ENV_FILE" ]]; then
@@ -1122,6 +1122,9 @@ create_environment_file() {
     existing_value="$(sed -n 's/^RAG_TOP_K_RERANKER=//p' "$ENV_FILE" | tail -n 1)"
     [[ "$existing_value" =~ ^[0-9]+$ ]] && (( existing_value >= 1 && existing_value <= 100 )) && RAG_TOP_K_RERANKER="$existing_value"
   fi
+  compose_file="${BASE_DIR}/compose.yaml"
+  [[ ! -f "$OLLAMA_COMPOSE_FILE" ]] || compose_file="${compose_file}:${OLLAMA_COMPOSE_FILE}"
+  [[ ! -f "$GPU_COMPOSE_FILE" ]] || compose_file="${compose_file}:${GPU_COMPOSE_FILE}"
   compose_profiles='monitoring'
   [[ -z "$OLLAMA_COMPOSE_PROFILES" ]] || compose_profiles="${OLLAMA_COMPOSE_PROFILES},monitoring"
   openwebui_public_url="${openwebui_public_url%/}"
@@ -1136,10 +1139,10 @@ create_environment_file() {
   admin_public_host="$(public_url_host "$admin_public_url")"
   grafana_public_host="$(public_url_host "$grafana_public_url")"
   mcp_public_host="$(public_url_host "$mcp_public_url")"
-  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nOPENWEBUI_PUBLIC_URL=%s\nOPENWEBUI_PUBLIC_HOST=%s\nADMIN_PUBLIC_URL=%s\nADMIN_PUBLIC_HOST=%s\nGRAFANA_PUBLIC_URL=%s\nGRAFANA_PUBLIC_HOST=%s\nMCP_PUBLIC_URL=%s\nMCP_PUBLIC_HOST=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_KV_CACHE_QUANTIZATION=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\nDOCLING_VERSION=%s\nDOCLING_CPU_THREADS=%s\nRAG_RERANKING_MODEL=%s\nRAG_RERANKING_BATCH_SIZE=%s\nRAG_TOP_K=%s\nRAG_TOP_K_RERANKER=%s\n' \
+  printf 'CBM_CACHE_DIR=%s\nCBM_ALLOWED_ROOT=%s\nCBM_MEM_BUDGET_MB=%s\nCBM_HOST_BIN=%s\nLOCAL_UID=%s\nLOCAL_GID=%s\nUI_PORT=%s\nOPENWEBUI_PUBLIC_URL=%s\nOPENWEBUI_PUBLIC_HOST=%s\nADMIN_PUBLIC_URL=%s\nADMIN_PUBLIC_HOST=%s\nGRAFANA_PUBLIC_URL=%s\nGRAFANA_PUBLIC_HOST=%s\nMCP_PUBLIC_URL=%s\nMCP_PUBLIC_HOST=%s\nWORKSPACE_TIMEZONE=%s\nREPOSITORY_SYNC_CONCURRENCY=%s\nADMIN_EMAIL=%s\nADMIN_USERNAME=%s\nOLLAMA_VERSION=%s\nOLLAMA_CHAT_MODEL=%s\nOLLAMA_KV_CACHE_QUANTIZATION=%s\nOLLAMA_RUNTIME=%s\nOLLAMA_BASE_URL=%s\nCOMPOSE_FILE=%s\nCOMPOSE_PROFILES=%s\nOLLAMA_GPU_MODE=%s\nOLLAMA_GPU_DEVICE_IDS=%s\nDOCLING_VERSION=%s\nDOCLING_CPU_THREADS=%s\nRAG_RERANKING_MODEL=%s\nRAG_RERANKING_BATCH_SIZE=%s\nRAG_TOP_K=%s\nRAG_TOP_K_RERANKER=%s\n' \
     "$CACHE_DIR" "$REPOSITORIES_DIR" "$CBM_MEM_BUDGET_MB" "$CBM_CONTAINER_BIN" "$(id -u)" "$(id -g)" "$ui_port" \
     "$openwebui_public_url" "$openwebui_public_host" "$admin_public_url" "$admin_public_host" "$grafana_public_url" "$grafana_public_host" "$mcp_public_url" "$mcp_public_host" \
-    "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_KV_CACHE_QUANTIZATION" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$compose_profiles" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" "$DOCLING_VERSION" "$DOCLING_CPU_THREADS" "$RAG_RERANKING_MODEL" "$RAG_RERANKING_BATCH_SIZE" "$RAG_TOP_K" "$RAG_TOP_K_RERANKER" >"$temporary_file"
+    "$workspace_timezone" "$repository_sync_concurrency" "$ADMIN_EMAIL" "$ADMIN_USERNAME" "$OLLAMA_VERSION" "$OLLAMA_CHAT_MODEL" "$OLLAMA_KV_CACHE_QUANTIZATION" "$OLLAMA_RUNTIME" "$OLLAMA_BASE_URL" "$compose_file" "$compose_profiles" "$OLLAMA_GPU_MODE" "$OLLAMA_GPU_DEVICE_IDS" "$DOCLING_VERSION" "$DOCLING_CPU_THREADS" "$RAG_RERANKING_MODEL" "$RAG_RERANKING_BATCH_SIZE" "$RAG_TOP_K" "$RAG_TOP_K_RERANKER" >"$temporary_file"
   chmod 600 "$temporary_file"
   mv "$temporary_file" "$ENV_FILE"
   success "Arquivo .env gerado com caminhos absolutos"
