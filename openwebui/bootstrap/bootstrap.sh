@@ -224,7 +224,7 @@ if [ -n "$models_response" ]; then
 
     if echo "$base_id $m_id" | grep -qE "coder|code"; then
       updated_payload="$(echo "$item" | jq --arg chat_model "$OLLAMA_CHAT_MODEL" --argjson ctx "$OLLAMA_CODE_CONTEXT_LENGTH" --argjson gpu "$OLLAMA_CODE_NUM_GPU" '
-        .info | (if .base_model_id != null and .base_model_id != "" then .base_model_id = $chat_model else . end) | .params.num_ctx = $ctx | .params.num_gpu = $gpu | .params.num_batch = 512 | .params.temperature = 0.2 | .params.repeat_penalty = 1.05 | .params.top_p = 0.85 | .params.min_p = 0.05
+        .info | (if .base_model_id != null and .base_model_id != "" then .base_model_id = $chat_model else . end) | .params.num_ctx = $ctx | .params.num_gpu = $gpu | .params.num_batch = 2048 | .params.temperature = 0.2 | .params.repeat_penalty = 1.05 | .params.top_p = 0.85 | .params.min_p = 0.05
       ')"
       curl -fsS "$OPENWEBUI_URL/api/v1/models/model/update" \
         -H "$authorization" \

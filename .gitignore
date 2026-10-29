@@ -25,3 +25,8 @@ rag-eval/reports/
 code-eval/reports/
 code-eval/queries.local.json
 *.semantic-graph.json
+
+# Relatórios gerados e caches de execução
+reports/
+__pycache__/
+*.pyc

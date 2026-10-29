@@ -33,6 +33,8 @@ export async function optimizeDatabases(cacheDir = DEFAULT_CACHE_DIR) {
       db.exec('PRAGMA busy_timeout = 5000;');
       const journalModeRow = db.prepare('PRAGMA journal_mode = WAL;').get();
       db.exec('PRAGMA synchronous = NORMAL;');
+      db.exec('PRAGMA mmap_size = 2147483648;'); // 2GB memory-mapped I/O
+      db.exec('PRAGMA cache_size = -64000;');    // 64MB in-memory page cache
       db.exec('PRAGMA optimize;');
 
       const journalMode = journalModeRow?.journal_mode || String(journalModeRow);

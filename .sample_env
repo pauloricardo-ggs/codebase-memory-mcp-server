@@ -24,3 +24,9 @@ MCP_PUBLIC_URL=http://mcp.localhost:8080
 MCP_PUBLIC_HOST=mcp.localhost
 # Porta direta do MCP (ignora Nginx). Clientes locais podem usar localhost:8081.
 # MCP_DIRECT_PORT=8081
+
+# Configurações de Concorrência e Acesso de Rede do Ollama
+# Interface de publicação: 127.0.0.1 por padrão; defina 0.0.0.0 para atender outros desenvolvedores na LAN/VPN
+OLLAMA_HOST_BIND=127.0.0.1
+# Concorrência simultânea de inferência (slots de GPU): 1 por padrão; use 4 para placas com 16GB VRAM
+OLLAMA_NUM_PARALLEL=1

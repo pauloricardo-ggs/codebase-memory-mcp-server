@@ -154,6 +154,10 @@ if [ -d ".git" ]; then
 fi
 
 echo "==================================================================="
+echo " Servidor Local de IA / Inferência (Ollama):"
+echo "   Endpoint LAN: http://192.168.15.90:11434"
+echo "   Modelo Código: qwen2.5-coder:14b-instruct-q4_0"
+echo "==================================================================="
 echo " Configuração Concluída com Sucesso!"
 echo " A sua IDE (Cursor/VS Code/Windsurf/Claude) já está conectada ao"
 echo " Codebase Memory e pronta para usar a ferramenta de 1 passo (inspect_symbol)."

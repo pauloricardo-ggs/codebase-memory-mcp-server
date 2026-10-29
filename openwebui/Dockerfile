@@ -20,6 +20,7 @@ COPY patch-google-drive-citations.py /tmp/patch-google-drive-citations.py
 COPY patch-knowledge-fs.py /tmp/patch-knowledge-fs.py
 COPY patch-model-visibility.py /tmp/patch-model-visibility.py
 COPY patch-whisper-prompt.py /tmp/patch-whisper-prompt.py
+COPY patch-qwen-tool-calls.py /tmp/patch-qwen-tool-calls.py
 COPY test-knowledge-fs-patch.py /tmp/test-knowledge-fs-patch.py
 COPY google_drive_citations.py /app/backend/open_webui/google_drive_citations.py
 COPY --from=citation-frontend /src/build /app/build
@@ -28,5 +29,6 @@ RUN python /tmp/patch-google-drive-runtime.py \
     && python /tmp/patch-knowledge-fs.py \
     && python /tmp/patch-model-visibility.py \
     && python /tmp/patch-whisper-prompt.py \
+    && python /tmp/patch-qwen-tool-calls.py \
     && python /tmp/test-knowledge-fs-patch.py \
-    && rm /tmp/patch-google-drive-runtime.py /tmp/patch-google-drive-citations.py /tmp/patch-knowledge-fs.py /tmp/patch-model-visibility.py /tmp/patch-whisper-prompt.py /tmp/test-knowledge-fs-patch.py
+    && rm /tmp/patch-google-drive-runtime.py /tmp/patch-google-drive-citations.py /tmp/patch-knowledge-fs.py /tmp/patch-model-visibility.py /tmp/patch-whisper-prompt.py /tmp/patch-qwen-tool-calls.py /tmp/test-knowledge-fs-patch.py
