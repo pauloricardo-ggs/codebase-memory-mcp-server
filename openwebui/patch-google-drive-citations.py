@@ -187,15 +187,25 @@ middleware = replace_exact(
     'nome visual no metadata da fonte',
     middleware_file,
 )
-middleware = replace_exact(
-    middleware,
-    "                                'query_knowledge_files',\n",
-    "                                'query_knowledge_files',\n"
-    "                                'kb_exec',\n",
-    1,
-    'kb_exec na extração de fontes',
-    middleware_file,
-)
+if 'CITATION_TOOL_NAMES =' in middleware:
+    middleware = replace_exact(
+        middleware,
+        "CITATION_TOOL_NAMES = ('fetch_url', 'view_file', 'view_knowledge_file', 'query_knowledge_files', 'query_chat_files')",
+        "CITATION_TOOL_NAMES = ('fetch_url', 'view_file', 'view_knowledge_file', 'query_knowledge_files', 'query_chat_files', 'kb_exec')",
+        1,
+        'kb_exec na extração de fontes (v0.12+)',
+        middleware_file,
+    )
+else:
+    middleware = replace_exact(
+        middleware,
+        "                                'query_knowledge_files',\n",
+        "                                'query_knowledge_files',\n"
+        "                                'kb_exec',\n",
+        1,
+        'kb_exec na extração de fontes',
+        middleware_file,
+    )
 middleware = replace_exact(
     middleware,
     '''                                citation_sources = get_citation_source_from_tool_result(

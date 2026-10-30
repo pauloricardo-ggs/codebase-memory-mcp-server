@@ -34,20 +34,21 @@ O **Spec-Driven Development (SDD 2.0)** substitui o "Plan Mode" tradicional por 
   - `get_code_snippet` para confirmar assinaturas de métodos existentes.
 - **Entrega**: Grava a especificação em [`docs/designs/<feature-name>.md`](file:///home/ma9/codebase-memory-mcp-server/docs/designs/) baseada no template oficial [`docs/designs/TEMPLATE-SPEC.md`](file:///home/ma9/codebase-memory-mcp-server/docs/designs/TEMPLATE-SPEC.md).
 
-### 1.2 O Peixinho Dourado / Goldfish (Adversarial Critic)
+### 1.2 O Peixinho Dourado / Goldfish (Adversarial Multi-Lens Swarm)
 - **Objetivo**: Ler **apenas** a especificação Markdown, sem nenhuma memória da conversa de brainstorming.
 - **Por que zero contexto?**: Sem a conversa prévia, o Goldfish não foi "convencido" das premissas implícitas do desenvolvedor. Ele avalia se a especificação é compreensível e completa por si só.
 - **Execução**: Roda na GPU dedicada local (**RTX 5060 Ti**) no modelo **`qwen2.5-coder:14b-instruct-q4_0`** com **custo $0.00 de tokens**.
-- **Comando**:
+- **Comando (Enxame Multi-Lente EGM 2.0)**:
   ```bash
-  node scripts/egm-review.mjs --spec docs/designs/<feature-name>.md
+  # Executa o enxame de 4 lentes em paralelo (Edge Cases, Contratos, Segurança SUSEP e Escopo)
+  node scripts/egm-review.mjs --spec docs/designs/<feature-name>.md --swarm
   ```
-- **Critérios Auditados**:
-  1. *Unstated Assumptions*: Premissas dadas como óbvias que podem quebrar em produção.
-  2. *Missing Edge Cases*: Casos de nulo, timeout, concorrência, deadlocks, limites de lista.
-  3. *Ambiguidades*: Pontos onde o implementador precisaria adivinhar a regra.
-  4. *Risco de Quebra de Contrato*: Alterações destrutivas ou sem compatibilidade retroativa.
-- **Saída**: Pontuação de 0 a 100 e veredito (`APPROVED`, `NEEDS_REVISION` ou `REJECTED`). Se reprovado, o Elefante ajusta a especificação antes de prosseguir.
+- **As Quatro Lentes do Enxame**:
+  1. *Lente 1 (Edge Cases & Concorrência - Peso 30%)*: Deadlocks, race conditions, timeouts, limites de lista.
+  2. *Lente 2 (Contratos & gRPC - Peso 25%)*: Quebra de compatibilidade de APIs e schemas.
+  3. *Lente 3 (Segurança & SUSEP/LGPD - Peso 25%)*: Falhas de autorização, trilhas de auditoria, conformidade.
+  4. *Lente 4 (Escopo Rígido & Viabilidade - Peso 20%)*: Validação dos arquivos do envelope e testabilidade.
+- **Saída**: Pontuação de consenso ponderada (0 a 100) e veredito (`APPROVED`, `NEEDS_REVISION` ou `REJECTED`). Se reprovado, o Elefante ajusta a especificação antes de prosseguir.
 
 ### 1.3 O Implementador (Execution & Scope Guard)
 - **Objetivo**: Escrever o código estritamente dentro dos arquivos e regras aprovadas na spec.
@@ -77,15 +78,18 @@ O **Spec-Driven Development (SDD 2.0)** substitui o "Plan Mode" tradicional por 
 cp docs/designs/TEMPLATE-SPEC.md docs/designs/minha-feature.md
 # (Edição da spec com auxílio das ferramentas do MCP Codebase Memory)
 
-# Passo 2: O Goldfish revisa com zero contexto na GPU local (sem gastar tokens de nuvem)
-node scripts/egm-review.mjs --spec docs/designs/minha-feature.md --export-envelope envelope.json
+# Passo 2: O Enxame Goldfish revisa com zero contexto na GPU local (sem gastar tokens de nuvem)
+node scripts/egm-review.mjs --spec docs/designs/minha-feature.md --swarm --export-envelope envelope.json
 
 # Passo 3: Se aprovado (score >= 85), tira o snapshot de escopo
 node scripts/task-scope-guard.mjs snapshot --task-id minha-feature --envelope envelope.json
 
 # Passo 4: Executa a implementação via cognitive router (Terra / Sol / Local)
 
-# Passo 5: Verifica integridade de escopo e suíte de testes
+# Passo 5: Roda os Quality Gates do Uncle Bob (CRAP < 10 e DRY < 0.82)
+python3 tools/quality_gates/verify_quality.py caminho/do/modulo
+
+# Passo 6: Verifica integridade de escopo e suíte de testes
 node scripts/task-scope-guard.mjs verify --task-id minha-feature --envelope envelope.json
 npm test --if-present || dotnet test
 ```

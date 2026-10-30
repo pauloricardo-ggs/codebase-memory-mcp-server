@@ -29,4 +29,8 @@ python3 "$SCRIPT_DIR/tech_debt_scanner.py" >> "$LOG_DIR/overnight_tech_debt.log"
 echo "[*] Passo 5: Executando análise de gargalos Datadog APM de produção..."
 python3 "$SCRIPT_DIR/generate_and_send_performance_report.py" >> "$LOG_DIR/overnight_datadog.log" 2>&1 || true
 
+# 6. Auditoria Prescritiva de Qualidade e Guia de Refatoração (Receitas para IA)
+echo "[*] Passo 6: Executando auditoria prescritiva de qualidade e receitas de refatoração..."
+python3 "$SCRIPT_DIR/code_quality_architect_scanner.py" >> "$LOG_DIR/overnight_quality_recipes.log" 2>&1 || true
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] [✓] Auditorias semanais concluídas. Relatórios enfileirados exclusivamente para entrega na Segunda-feira às 08:00 BRT via Telegram."

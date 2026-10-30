@@ -2,7 +2,13 @@ from pathlib import Path
 import sys
 
 
-audio_file = Path(sys.argv[1] if len(sys.argv) > 1 else '/app/backend/open_webui/routers/audio.py')
+if len(sys.argv) > 1:
+    audio_file = Path(sys.argv[1])
+elif Path('/app/backend/open_webui/routers/audio/__init__.py').exists():
+    audio_file = Path('/app/backend/open_webui/routers/audio/__init__.py')
+else:
+    audio_file = Path('/app/backend/open_webui/routers/audio.py')
+
 source = audio_file.read_text()
 
 # 1. Patch Whisper transcription (VAD + anti-hallucination + no_speech_prob filter)
@@ -14,7 +20,7 @@ before_whisper = '''        segments, info = model.transcribe(
             multilingual=WHISPER_MULTILINGUAL,
         )'''
 
-after_whisper = '''        import re
+after_whisper = r'''        import re
         initial_prompt = os.getenv('WHISPER_INITIAL_PROMPT', '').strip()
         transcribe_kwargs = {
             'beam_size': 5,
@@ -62,13 +68,31 @@ elif 'transcribe_kwargs' not in source:
     )
 
 # 2. Patch TTS speech endpoint to strip citation markers [1], [2], etc.
+before_tts_v12 = '''    if payload is None:
+        try:
+            payload = JSONCodec.loads(body)
+        except Exception as exc:
+            log.exception(exc)
+            raise HTTPException(status_code=400, detail='Invalid JSON payload')'''
+
+after_tts_v12 = r'''    if payload is None:
+        try:
+            payload = JSONCodec.loads(body)
+        except Exception as exc:
+            log.exception(exc)
+            raise HTTPException(status_code=400, detail='Invalid JSON payload')
+
+    import re
+    if isinstance(payload, dict) and 'input' in payload and isinstance(payload['input'], str):
+        payload['input'] = re.sub(r'\s*\[\s*\d+(\s*,\s*\d+)*\s*\]', '', payload['input'])'''
+
 before_tts = '''    try:
         payload = JSONCodec.loads(body)
     except Exception as exc:
         log.exception(exc)
         raise HTTPException(status_code=400, detail='Invalid JSON payload')'''
 
-after_tts = '''    try:
+after_tts = r'''    try:
         payload = JSONCodec.loads(body)
     except Exception as exc:
         log.exception(exc)
@@ -78,12 +102,13 @@ after_tts = '''    try:
     if isinstance(payload, dict) and 'input' in payload and isinstance(payload['input'], str):
         payload['input'] = re.sub(r'\s*\[\s*\d+(\s*,\s*\d+)*\s*\]', '', payload['input'])'''
 
-occurrences_tts = source.count(before_tts)
-if occurrences_tts == 1:
+if before_tts_v12 in source:
+    source = source.replace(before_tts_v12, after_tts_v12)
+elif source.count(before_tts) == 1:
     source = source.replace(before_tts, after_tts)
 elif "payload['input'] = re.sub" not in source:
     raise RuntimeError(
-        f'Patch TTS incompatível com {audio_file}: esperado 1 trecho de JSONCodec.loads, encontrado {occurrences_tts}.'
+        f'Patch TTS incompatível com {audio_file}: não foi possível localizar bloco JSONCodec.loads'
     )
 
 # 3. Patch Faster-Whisper initialization to support WHISPER_DEVICE and WHISPER_CPU_THREADS

@@ -44,11 +44,16 @@ def dispatch():
 
     # 2. Envia cada documento individualmente e arquiva
     for file_path in pending_files:
+        archived_path = DISPATCHED_DIR / file_path.name
         print(f"[*] Despachando documento: {file_path.name}")
-        send_telegram_message(f"📑 *Relatório:* `{file_path.name}`", str(file_path))
+        caption = (
+            f"📑 *Relatório:* `{file_path.name}`\n"
+            f"📂 *Caminho no Servidor:*\n`{archived_path}`"
+        )
+        send_telegram_message(caption, str(file_path))
         # Move para arquivamento
-        shutil.move(file_path, DISPATCHED_DIR / file_path.name)
-        print(f"[✓] Arquivado em: {DISPATCHED_DIR / file_path.name}")
+        shutil.move(file_path, archived_path)
+        print(f"[✓] Arquivado em: {archived_path}")
 
     print("[✓] Despacho matinal concluído com sucesso!")
 

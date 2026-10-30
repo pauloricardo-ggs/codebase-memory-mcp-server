@@ -1,0 +1,8 @@
+FROM qwen2.5-coder:14b-instruct-q4_0
+ADAPTER /root/claps_qwen_adapter.gguf
+
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
+PARAMETER temperature 0.2
+PARAMETER top_p 0.85
+PARAMETER num_ctx 32768

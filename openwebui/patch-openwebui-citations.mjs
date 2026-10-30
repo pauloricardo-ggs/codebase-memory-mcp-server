@@ -118,16 +118,21 @@ if (handlerStart < 0 || handlerEnd < 0) {
 }
 source = source.slice(0, handlerStart) + directHandler + source.slice(handlerEnd);
 
-replaceExact(
-	`\t\t\t\tif (id.startsWith('http://') || id.startsWith('https://')) {
+const oldExtSource = `\t\t\t\tif (id.startsWith('http://') || id.startsWith('https://')) {
 \t\t\t\t\t_source = { ..._source, name: id, url: id };
-\t\t\t\t}`,
-	`\t\t\t\tif (id.startsWith('http://') || id.startsWith('https://')) {
+\t\t\t\t}`;
+const v12ExtSource = `\t\t\t\tif (id.startsWith('http://') || id.startsWith('https://')) {
+\t\t\t\t\t_source = { ..._source, name: metadata?.external ? _source.name : id, url: id };
+\t\t\t\t}`;
+const newExtSource = `\t\t\t\tif (id.startsWith('http://') || id.startsWith('https://')) {
 \t\t\t\t\t_source = { ..._source, name: metadata?.name ?? _source?.name ?? id, url: id };
-\t\t\t\t}`,
-	1,
-	'nome original da fonte externa'
-);
+\t\t\t\t}`;
+
+if (source.includes(v12ExtSource)) {
+	replaceExact(v12ExtSource, newExtSource, 1, 'nome original da fonte externa (v0.12)');
+} else {
+	replaceExact(oldExtSource, newExtSource, 1, 'nome original da fonte externa');
+}
 
 replaceExact(
 	`\n<CitationModal

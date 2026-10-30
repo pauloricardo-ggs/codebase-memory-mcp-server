@@ -30,3 +30,13 @@ code-eval/queries.local.json
 reports/
 __pycache__/
 *.pyc
+
+# Pesos de modelos e artefatos pesados de treinamento
+*.safetensors
+*.gguf
+*.bin
+training/llama.cpp/
+training/checkpoints/
+training/*_adapter/
+training/*_merged_model/
+training/gguf/*.gguf
